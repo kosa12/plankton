@@ -36,6 +36,14 @@ docker-compose.override.yml
 # Reports (jscpd output)
 reports/
 
+# TypeScript / JavaScript
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+coverage/
+.biome/
+
 # Claude Code session artifacts
 .claude/.tmp/
 .claude/plans/

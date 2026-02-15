@@ -1,8 +1,9 @@
 #!/bin/bash
 # multi_linter.sh - Claude Code PostToolUse hook for multi-language linting
 # Supports: Python (ruff+ty+flake8-pydantic+flake8-async), Shell (shellcheck+shfmt),
-#           YAML (yamllint), JSON (jaq), Dockerfile (hadolint),
-#           TOML (taplo), Markdown (markdownlint-cli2)
+#           YAML (yamllint), JSON (jaq/biome), Dockerfile (hadolint),
+#           TOML (taplo), Markdown (markdownlint-cli2),
+#           TypeScript/JS/CSS (biome+semgrep)
 #
 # Three-Phase Architecture:
 #   Phase 1: Auto-format files (silent on success)
@@ -12,10 +13,12 @@
 # Dependencies:
 #   Required: jaq (JSON parsing), ruff (Python), claude (subprocess delegation)
 #   Optional: shellcheck, shfmt, yamllint, hadolint, taplo, markdownlint-cli2,
-#             ty (type checking), flake8-pydantic
+#             ty (type checking), flake8-pydantic, biome (TypeScript/JS/CSS),
+#             semgrep (security scanning)
 #
 # Project configs: .ruff.toml, ty.toml, taplo.toml, .yamllint,
-#                  .shellcheckrc, .hadolint.yaml, .markdownlint.jsonc
+#                  .shellcheckrc, .hadolint.yaml, .markdownlint.jsonc,
+#                  biome.json, .semgrep.yml
 #
 # Exit Code Strategy:
 #   0 - No issues or all issues fixed by delegation
@@ -73,6 +76,77 @@ is_subprocess_enabled() {
   local enabled
   enabled=$(echo "${CONFIG_JSON}" | jaq -r '.phases.subprocess_delegation // true' 2>/dev/null)
   [[ "${enabled}" != "false" ]]
+}
+
+# Check if TypeScript is enabled (handles both legacy boolean and nested object)
+is_typescript_enabled() {
+  local ts_config
+  ts_config=$(echo "${CONFIG_JSON}" | jaq -r '.languages.typescript' 2>/dev/null)
+  case "${ts_config}" in
+    false|null) return 1 ;;
+    true) return 0 ;;
+    *) # nested object - check .enabled field
+      local enabled
+      enabled=$(echo "${CONFIG_JSON}" | jaq -r '.languages.typescript.enabled // false' 2>/dev/null)
+      [[ "${enabled}" != "false" ]]
+      ;;
+  esac
+}
+
+# Get a nested TS config value with default
+get_ts_config() {
+  local key="$1"
+  local default="$2"
+  echo "${CONFIG_JSON}" | jaq -r ".languages.typescript.${key} // \"${default}\"" 2>/dev/null
+}
+
+# Detect Biome binary with session caching (D8)
+detect_biome() {
+  local cache_file="/tmp/.biome_path_${PPID}"
+
+  # Check session cache first
+  if [[ -f "${cache_file}" ]]; then
+    local cached
+    cached=$(cat "${cache_file}")
+    if [[ -n "${cached}" ]]; then
+      echo "${cached}"
+      return 0
+    fi
+  fi
+
+  local biome_cmd=""
+  local js_runtime
+  js_runtime=$(get_ts_config "js_runtime" "auto")
+
+  if [[ "${js_runtime}" != "auto" ]]; then
+    # Explicit runtime configured
+    case "${js_runtime}" in
+      npm) biome_cmd="npx biome" ;;
+      pnpm) biome_cmd="pnpm exec biome" ;;
+      bun) biome_cmd="bunx biome" ;;
+    esac
+  else
+    # Auto-detect: project-local -> PATH -> npx -> pnpm -> bunx
+    if [[ -x "./node_modules/.bin/biome" ]]; then
+      biome_cmd="$(cd . && pwd)/node_modules/.bin/biome"
+    elif command -v biome >/dev/null 2>&1; then
+      biome_cmd="biome"
+    elif command -v npx >/dev/null 2>&1; then
+      biome_cmd="npx biome"
+    elif command -v pnpm >/dev/null 2>&1; then
+      biome_cmd="pnpm exec biome"
+    elif command -v bunx >/dev/null 2>&1; then
+      biome_cmd="bunx biome"
+    fi
+  fi
+
+  if [[ -n "${biome_cmd}" ]]; then
+    echo "${biome_cmd}" > "${cache_file}"
+    echo "${biome_cmd}"
+    return 0
+  fi
+
+  return 1
 }
 
 # Initialize configuration
@@ -175,6 +249,13 @@ spawn_fix_subprocess() {
     shell) format_cmd="shfmt -w -i 2 -ci -bn '${fp}'" ;;
     toml) format_cmd="RUST_LOG=error taplo fmt '${fp}'" ;;
     markdown) format_cmd="markdownlint-cli2 --no-globs --fix '${fp}'" ;;
+    typescript)
+      local _biome_cmd
+      _biome_cmd=$(detect_biome 2>/dev/null) || _biome_cmd=""
+      if [[ -n "${_biome_cmd}" ]]; then
+        format_cmd="${_biome_cmd} format --write '${fp}'"
+      fi
+      ;;
     *) format_cmd="" ;;
   esac
 
@@ -346,18 +427,44 @@ rerun_phase1() {
       }
       ;;
     json)
-      # Re-validate and pretty-print if valid (use mktemp for safety)
+      # Re-validate and format if valid
+      # Use Biome if TS enabled and available (D6), fallback to jaq pretty-print
       if jaq empty "${fp}" 2>/dev/null; then
-        local tmp_file
-        tmp_file=$(mktemp) || return
-        if jaq '.' "${fp}" >"${tmp_file}" 2>/dev/null; then
-          if ! cmp -s "${fp}" "${tmp_file}"; then
-            mv "${tmp_file}" "${fp}"
+        local json_done=false
+        if is_typescript_enabled; then
+          local _biome_cmd
+          _biome_cmd=$(detect_biome 2>/dev/null) || _biome_cmd=""
+          if [[ -n "${_biome_cmd}" ]]; then
+            ${_biome_cmd} format --write "${fp}" >/dev/null 2>&1 && json_done=true
+          fi
+        fi
+        if [[ "${json_done}" == "false" ]]; then
+          local tmp_file
+          tmp_file=$(mktemp) || return
+          if jaq '.' "${fp}" >"${tmp_file}" 2>/dev/null; then
+            if ! cmp -s "${fp}" "${tmp_file}"; then
+              mv "${tmp_file}" "${fp}"
+            else
+              rm -f "${tmp_file}"
+            fi
           else
             rm -f "${tmp_file}"
           fi
+        fi
+      fi
+      ;;
+    typescript)
+      local _biome_cmd
+      _biome_cmd=$(detect_biome 2>/dev/null) || _biome_cmd=""
+      if [[ -n "${_biome_cmd}" ]]; then
+        local _unsafe_flag=""
+        local _unsafe
+        _unsafe=$(get_ts_config "biome_unsafe_autofix" "false")
+        [[ "${_unsafe}" == "true" ]] && _unsafe_flag="--unsafe"
+        if [[ -n "${_unsafe_flag}" ]]; then
+          (cd "${CLAUDE_PROJECT_DIR:-.}" && ${_biome_cmd} check --write "${_unsafe_flag}" "$(_biome_relpath "${fp}")") >/dev/null 2>&1 || true
         else
-          rm -f "${tmp_file}"
+          (cd "${CLAUDE_PROJECT_DIR:-.}" && ${_biome_cmd} check --write "$(_biome_relpath "${fp}")") >/dev/null 2>&1 || true
         fi
       fi
       ;;
@@ -472,10 +579,237 @@ rerun_phase2() {
         count=$(echo "${v}" | jaq 'length' 2>/dev/null || echo "0")
       fi
       ;;
+    typescript)
+      local _biome_cmd
+      _biome_cmd=$(detect_biome 2>/dev/null) || _biome_cmd=""
+      if [[ -n "${_biome_cmd}" ]]; then
+        local biome_out
+        biome_out=$( (cd "${CLAUDE_PROJECT_DIR:-.}" && ${_biome_cmd} lint --reporter=json "$(_biome_relpath "${fp}")") 2>/dev/null || true)
+        if [[ -n "${biome_out}" ]]; then
+          count=$(echo "${biome_out}" | jaq '[.diagnostics[] |
+            select(.severity == "error" or .severity == "warning")] | length' 2>/dev/null || echo "0")
+        fi
+      fi
+      ;;
     *) ;; # Unknown file type
   esac
 
   echo "${count}"
+}
+
+# ============================================================================
+# TYPESCRIPT HANDLER
+# ============================================================================
+
+# Semgrep session-scoped helper (D2, D11)
+_handle_semgrep_session() {
+  local fp="$1"
+  local semgrep_enabled
+  semgrep_enabled=$(get_ts_config "semgrep" "true")
+  [[ "${semgrep_enabled}" == "false" ]] && return
+
+  local session_file="/tmp/.semgrep_session_${PPID}"
+  echo "${fp}" >>"${session_file}" 2>/dev/null || true
+
+  if [[ -f "${session_file}" ]]; then
+    local file_count
+    file_count=$(wc -l <"${session_file}" 2>/dev/null | tr -d ' ')
+    if [[ "${file_count}" -ge 3 ]] && [[ ! -f "${session_file}.done" ]]; then
+      touch "${session_file}.done"
+      if command -v semgrep >/dev/null 2>&1 && [[ -f "${CLAUDE_PROJECT_DIR:-.}/.semgrep.yml" ]]; then
+        local semgrep_files
+        semgrep_files=$(sort -u "${session_file}" | tr '\n' ' ')
+        local semgrep_result
+        # shellcheck disable=SC2086  # Intentional word splitting for file list
+        semgrep_result=$(semgrep --json --config "${CLAUDE_PROJECT_DIR:-.}/.semgrep.yml" \
+          ${semgrep_files} 2>/dev/null || true)
+        if [[ -n "${semgrep_result}" ]]; then
+          local finding_count
+          finding_count=$(echo "${semgrep_result}" | jaq '.results | length' 2>/dev/null || echo "0")
+          if [[ "${finding_count}" -gt 0 ]]; then
+            {
+              echo ""
+              echo "[hook:advisory] Semgrep: ${finding_count} security finding(s)"
+              echo "Run 'semgrep --config .semgrep.yml' for details."
+              echo ""
+            } >&2
+          fi
+        fi
+      fi
+    fi
+  fi
+}
+
+# jscpd session-scoped helper for TypeScript (D17)
+_handle_jscpd_ts_session() {
+  local fp="$1"
+  local session_file="/tmp/.jscpd_ts_session_${PPID}"
+  echo "${fp}" >>"${session_file}" 2>/dev/null || true
+
+  if [[ -f "${session_file}" ]]; then
+    local file_count
+    file_count=$(wc -l <"${session_file}" 2>/dev/null | tr -d ' ')
+    if [[ "${file_count}" -ge 3 ]] && [[ ! -f "${session_file}.done" ]]; then
+      touch "${session_file}.done"
+      if command -v npx >/dev/null 2>&1; then
+        local jscpd_result
+        jscpd_result=$(npx jscpd --config .jscpd.json --reporters json \
+          --silent 2>/dev/null || true)
+        if [[ -n "${jscpd_result}" ]]; then
+          local clone_count
+          clone_count=$(echo "${jscpd_result}" \
+            | jaq -r 'if .statistics then .statistics.total.clones else if .statistic then .statistic.total.clones else 0 end end' 2>/dev/null || echo "0")
+          if [[ "${clone_count}" -gt 0 ]]; then
+            {
+              echo ""
+              echo "[hook:advisory] Duplicate code detected (TS/JS)"
+              echo "Clone pairs found: ${clone_count}"
+              echo "Run 'npx jscpd --config .jscpd.json' for details."
+              echo ""
+            } >&2
+          fi
+        fi
+      fi
+    fi
+  fi
+}
+
+# Nursery mismatch validation (D9)
+_validate_nursery_config() {
+  local biome_cmd="$1"
+  local biome_json="${CLAUDE_PROJECT_DIR:-.}/biome.json"
+  [[ ! -f "${biome_json}" ]] && return
+
+  local config_nursery
+  config_nursery=$(get_ts_config "biome_nursery" "warn")
+  local biome_nursery
+  biome_nursery=$(jaq -r '.linter.rules.nursery // "off"' "${biome_json}" 2>/dev/null || echo "")
+
+  # Normalize: biome.json uses severity strings, config.json uses warn/error/off
+  if [[ -n "${biome_nursery}" ]] && [[ "${biome_nursery}" != "null" ]] \
+    && [[ "${config_nursery}" != "${biome_nursery}" ]]; then
+    echo "[hook:warning] config.json biome_nursery='${config_nursery}' but biome.json nursery='${biome_nursery}' — behavior follows biome.json" >&2
+  fi
+}
+
+# Biome project-domain rules (nursery) require relative paths (biome 2.3.x).
+# Convert absolute path to relative for biome invocations.
+_biome_relpath() {
+  local abs="$1"
+  local base="${CLAUDE_PROJECT_DIR:-.}"
+  if [[ "${abs}" == "${base}/"* ]]; then
+    echo "${abs#"${base}/"}"
+  else
+    echo "${abs}"
+  fi
+}
+
+# Main TypeScript handler (D1, D4, D7, D9-D11)
+handle_typescript() {
+  local fp="$1"
+  local ext="${fp##*.}"
+
+  # Detect Biome
+  local biome_cmd
+  biome_cmd=$(detect_biome 2>/dev/null) || biome_cmd=""
+
+  # SFC handling (D4): .vue/.svelte/.astro -> Semgrep only, skip Biome
+  case "${ext}" in
+    vue|svelte|astro)
+      local sfc_warned="/tmp/.sfc_warned_${ext}_${PPID}"
+      if [[ ! -f "${sfc_warned}" ]]; then
+        touch "${sfc_warned}"
+        if ! command -v semgrep >/dev/null 2>&1; then
+          echo "[hook:warning] No linter available for .${ext} files. Install semgrep for security scanning: brew install semgrep" >&2
+        fi
+      fi
+      # Run Semgrep session tracking only for SFC files
+      _handle_semgrep_session "${fp}"
+      return
+      ;;
+  esac
+
+  # Biome required for non-SFC TS/JS/CSS files
+  if [[ -z "${biome_cmd}" ]]; then
+    echo "[hook:warning] biome not found. Install: npm i -D @biomejs/biome" >&2
+    return
+  fi
+
+  # One-time nursery config validation per session
+  local nursery_checked="/tmp/.nursery_checked_${PPID}"
+  if [[ ! -f "${nursery_checked}" ]]; then
+    touch "${nursery_checked}"
+    _validate_nursery_config "${biome_cmd}"
+  fi
+
+  # Phase 1: Auto-format (silent) (D1, D10)
+  if is_auto_format_enabled; then
+    local unsafe_config
+    unsafe_config=$(get_ts_config "biome_unsafe_autofix" "false")
+    if [[ "${unsafe_config}" == "true" ]]; then
+      (cd "${CLAUDE_PROJECT_DIR:-.}" && ${biome_cmd} check --write --unsafe "$(_biome_relpath "${fp}")") >/dev/null 2>&1 || true
+    else
+      (cd "${CLAUDE_PROJECT_DIR:-.}" && ${biome_cmd} check --write "$(_biome_relpath "${fp}")") >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # Phase 2a: Biome lint (blocking) (D1, D3)
+  # D3: When oxlint enabled, skip 3 overlapping nursery rules
+  local biome_lint_args="lint --reporter=json"
+  local oxlint_enabled
+  oxlint_enabled=$(get_ts_config "oxlint_tsgolint" "false")
+  if [[ "${oxlint_enabled}" == "true" ]]; then
+    biome_lint_args+=" --skip=nursery/noFloatingPromises"
+    biome_lint_args+=" --skip=nursery/noMisusedPromises"
+    biome_lint_args+=" --skip=nursery/useAwaitThenable"
+  fi
+  local biome_output
+  # shellcheck disable=SC2086
+  biome_output=$( (cd "${CLAUDE_PROJECT_DIR:-.}" && ${biome_cmd} ${biome_lint_args} "$(_biome_relpath "${fp}")") 2>/dev/null || true)
+
+  if [[ -n "${biome_output}" ]]; then
+    local diag_count
+    diag_count=$(echo "${biome_output}" | jaq '.diagnostics | length' 2>/dev/null || echo "0")
+
+    if [[ "${diag_count}" -gt 0 ]]; then
+      # Convert Biome diagnostics to standard format
+      # Biome uses byte offsets in span; convert to line/column via sourceCode
+      local biome_violations
+      biome_violations=$(echo "${biome_output}" | jaq '[.diagnostics[] |
+        select(.severity == "error" or .severity == "warning") |
+        {
+          line: ((.location.sourceCode[0:.location.span[0]] // "") | split("\n") | length),
+          column: (((.location.sourceCode[0:.location.span[0]] // "") | split("\n") | last | length) + 1),
+          code: .category,
+          message: .description,
+          linter: "biome"
+        }]' 2>/dev/null || echo "[]")
+
+      if [[ "${biome_violations}" != "[]" ]] && [[ -n "${biome_violations}" ]]; then
+        collected_violations=$(echo "${collected_violations}" "${biome_violations}" \
+          | jaq -s '.[0] + .[1]')
+        has_issues=true
+      fi
+
+      # Phase 2b: Nursery advisory count (D9)
+      local nursery_mode
+      nursery_mode=$(get_ts_config "biome_nursery" "warn")
+      if [[ "${nursery_mode}" == "warn" ]]; then
+        local nursery_count
+        nursery_count=$(echo "${biome_output}" | jaq '[.diagnostics[] |
+          select(.category | startswith("lint/nursery/"))] | length' 2>/dev/null || echo "0")
+        if [[ "${nursery_count}" -gt 0 ]]; then
+          echo "[hook:advisory] Biome nursery: ${nursery_count} diagnostic(s)" >&2
+        fi
+      fi
+    fi
+  fi
+
+  # Phase 2c: Semgrep session-scoped (D2, D11) — CSS excluded per ADR D4
+  [[ "${ext}" != "css" ]] && _handle_semgrep_session "${fp}"
+
+  # Phase 2d: jscpd session-scoped (D17)
+  _handle_jscpd_ts_session "${fp}"
 }
 
 # Determine file type for delegation
@@ -490,6 +824,8 @@ case "${file_path}" in
   *.json) file_type="json" ;;
   *.toml) file_type="toml" ;;
   *.md | *.mdx) file_type="markdown" ;;
+  *.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.mts|*.cts|*.css) file_type="typescript" ;;
+  *.vue|*.svelte|*.astro) file_type="typescript" ;;
   Dockerfile | Dockerfile.* | */Dockerfile | */Dockerfile.* | *.dockerfile) file_type="dockerfile" ;;
   *) exit 0 ;; # Unsupported
 esac
@@ -733,17 +1069,27 @@ case "${file_path}" in
         | jaq -s '.[0] + .[1]')
       has_issues=true
     else
-      # JSON: Phase 2 - Auto-format valid JSON (pretty-print) (use mktemp for safety)
+      # JSON: Phase 2 - Auto-format valid JSON
+      # Use Biome if TS enabled and available (D6), fallback to jaq pretty-print
       if is_auto_format_enabled; then
-        tmp_file=$(mktemp) || true
-        if [[ -n "${tmp_file}" ]] && jaq '.' "${file_path}" >"${tmp_file}" 2>/dev/null; then
-          if ! cmp -s "${file_path}" "${tmp_file}"; then
-            mv "${tmp_file}" "${file_path}"
-          else
-            rm -f "${tmp_file}"
+        json_formatted=false
+        if is_typescript_enabled; then
+          _biome_cmd=$(detect_biome 2>/dev/null) || _biome_cmd=""
+          if [[ -n "${_biome_cmd}" ]]; then
+            ${_biome_cmd} format --write "${file_path}" >/dev/null 2>&1 && json_formatted=true
           fi
-        else
-          rm -f "${tmp_file}" 2>/dev/null || true
+        fi
+        if [[ "${json_formatted}" == "false" ]]; then
+          tmp_file=$(mktemp) || true
+          if [[ -n "${tmp_file}" ]] && jaq '.' "${file_path}" >"${tmp_file}" 2>/dev/null; then
+            if ! cmp -s "${file_path}" "${tmp_file}"; then
+              mv "${tmp_file}" "${file_path}"
+            else
+              rm -f "${tmp_file}"
+            fi
+          else
+            rm -f "${tmp_file}" 2>/dev/null || true
+          fi
         fi
       fi
     fi
@@ -805,6 +1151,11 @@ case "${file_path}" in
         has_issues=true
       fi
     fi
+    ;;
+
+  *.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.mts|*.cts|*.css|*.vue|*.svelte|*.astro)
+    is_typescript_enabled || exit 0
+    handle_typescript "${file_path}"
     ;;
 
   *.md | *.mdx)

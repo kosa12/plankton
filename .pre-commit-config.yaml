@@ -19,6 +19,20 @@ repos:
         language: system
         types: [python]
 
+      # === PHASE 1a: TS FORMATTING ===
+      - id: biome-format
+        name: biome (format)
+        entry: bash -c 'command -v biome >/dev/null 2>&1 || exit 0; biome format --write "$@"' --
+        language: system
+        files: \.(jsx?|tsx?|cjs|cts|mjs|mts|css)$
+
+      # === PHASE 2a: TS LINTING ===
+      - id: biome-lint
+        name: biome (lint)
+        entry: bash -c 'command -v biome >/dev/null 2>&1 || exit 0; biome lint --write "$@"' --
+        language: system
+        files: \.(jsx?|tsx?|cjs|cts|mjs|mts|css)$
+
       # === PHASE 2b: ASYNC LINTING ===
       - id: flake8-async
         name: flake8-async (async patterns)
@@ -98,7 +112,7 @@ repos:
         name: jscpd (duplicates)
         entry: npx jscpd --config .jscpd.json --threshold 5
         language: system
-        files: \.(py|sh|yaml|yml)$
+        files: \.(py|sh|yaml|yml|ts|tsx|js|jsx|mjs|cjs|css)$
         pass_filenames: false
         stages: [pre-commit]
         verbose: true
@@ -108,3 +122,7 @@ repos:
 # - vulture: High false positive rate, advisory-only (needs whitelist)
 # - bandit: Security scanning belongs in CI gates, not commit-time
 # - flake8-pydantic: Niche Pydantic feedback, real-time via CC hooks
+# - semgrep: Session-scoped security scanning, 5-15s with --config auto
+# - knip: Project-scoped dead code analysis, 10-60s too slow for commit
+# - oxlint+tsgolint: Per-file type-aware lint, opt-in in CC hooks only
+# - tsgo: Session-scoped type checking advisory, opt-in in CC hooks only

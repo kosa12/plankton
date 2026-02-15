@@ -1,0 +1,27 @@
+{
+  "name": "cc-hooks-portable-template",
+  "version": "1.0.0",
+  "description": "A ready-to-use template for Claude Code hook-based code quality enforcement. Provides automated linting, formatting, and code quality checks that run during Claude Code sessions.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexfazio/cc-hooks-portable-template.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/alexfazio/cc-hooks-portable-template/issues"
+  },
+  "homepage": "https://github.com/alexfazio/cc-hooks-portable-template#readme",
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.15"
+  }
+}

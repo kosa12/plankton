@@ -1,9 +1,11 @@
 # ADR: TypeScript Hooks Expansion
 
-**Status**: Draft (all questions resolved)
+**Status**: Proposed
 **Date**: 2026-02-14
 **Author**: alex fazio + Claude Code clarification interview
-**Related**: [Linear Document](https://linear.app/ad-main/document/typescript-equivalent-of-ruff-for-claude-code-hooks-366e4ee6d5f6) | ADAI-13
+**Related**: [Linear Document][linear-ts-hooks] | ADAI-13
+
+[linear-ts-hooks]: https://linear.app/ad-main/document/typescript-equivalent-of-ruff-for-claude-code-hooks-366e4ee6d5f6
 
 ## Context and Problem Statement
 
@@ -44,11 +46,11 @@ TypeScript/JavaScript.
 
 | Tool | Pros | Cons | Verdict |
 | --- | --- | --- | --- |
-| **Biome** | Single binary (format+lint), `--reporter=json`, two-tier auto-fix, type-aware v2 | 436 rules (fewer than Oxlint), experimental Vue/Svelte SFC support (v2.3+, limitations with framework-specific syntax) | **Selected** |
-| **Oxlint + Oxfmt** | 660+ rules, 50-100x ESLint, Vue/Svelte/Astro plugins | Two binaries, Oxfmt alpha (Dec 2025), no built-in formatter stability | Rejected |
-| **Biome + Oxlint hybrid** | Maximum rule coverage | Double-reporting of overlapping rules, increased complexity | Rejected |
-| **Deno Lint** | Fast (~21ms/file), Rust-based | Only ~228 rules, no type-aware linting, awkward outside Deno | Rejected |
-| **Rslint** | TypeScript-first, typescript-go powered | Experimental (Aug 2025), no stable release | Rejected |
+| **Biome** | Single binary, JSON, auto-fix | 436 rules, exp. SFC | **Yes** |
+| **Oxlint+Oxfmt** | 520+ rules, 50-100x ESLint | Two bins, Oxfmt alpha | No |
+| **Biome+Oxlint** | Max rule coverage | Double-report, complex | No |
+| **Deno Lint** | Fast (~21ms/file), Rust | ~123 rules, no type | No |
+| **Rslint** | TS-first, tsgo powered | Experimental, no release | Rejected |
 
 **Rationale**:
 
@@ -65,19 +67,21 @@ TypeScript/JavaScript.
 
 ### D2: Supplemental Tool Stack
 
-**Decision**: Biome + Semgrep (optional) + jscpd
+**Decision**: Biome + oxlint+tsgolint (opt-in) + Semgrep (optional) +
+jscpd + tsgo (opt-in)
 
 Where Python uses 5 specialized per-file tools (ruff + ty + flake8 + vulture
 \+ bandit) plus jscpd, TypeScript uses one comprehensive single binary
 (Biome: 436 rules for format + lint + partial type-awareness) plus
-session-scoped advisory tools. Both achieve aggressive linting through
-different architectures. The TS per-edit blocking time (~0.4s) is lower
-than Python's (~0.8s) because Biome consolidates what Python splits across
-multiple tools.
+type-aware linting (oxlint+tsgolint, opt-in) and session-scoped advisory
+tools. Both achieve aggressive linting through different architectures.
+The TS per-edit blocking time (~0.4-1.4s depending on oxlint opt-in) is
+comparable to Python's (~0.8s).
 
 | Tool | Python Equivalent | Role | Scan Mode |
 | --- | --- | --- | --- |
-| **Biome** | ruff (format + lint) | Format, lint, import sorting | Per-file, blocking |
+| **Biome** | ruff (format+lint) | Format, lint, imports | Per-file blocking |
+| **oxlint+tsgolint** | ty (type check) | 45 type-aware rules | Per-file opt-in |
 | **Semgrep** | bandit (note 1) | Security scanning | Session-scoped, advisory |
 | **jscpd** | jscpd | Duplicate detection | Session-scoped, advisory |
 
@@ -86,12 +90,24 @@ runs session-scoped (after 3+ TS files modified) and is an optional
 enhancement — runs if installed (`brew install semgrep` or
 `uv pip install semgrep`), graceful skip if not.
 
-**CI-recommended tools** (not in hooks by default):
+**Note 2**: oxlint+tsgolint runs ONLY type-aware rules (45 rules that
+require type information). It does NOT overlap with Biome's 430+
+non-type-aware lint rules. However, 3 rules overlap in the type-aware
+space: Biome's nursery `noFloatingPromises`, `noMisusedPromises`, and
+`useAwaitThenable` duplicate oxlint's `no-floating-promises`,
+`no-misused-promises`, and `await-thenable`. When oxlint is enabled,
+the hook disables these 3 Biome nursery rules to prevent
+double-reporting (see D3). This avoids the double-reporting issue
+identified in D1 when evaluating Biome+Oxlint as dual general linters.
+See D3 for full rationale.
+
+**Opt-in tools** (off by default, opt-in via config.json):
 
 | Tool | Python Equivalent | Role | Default |
 | --- | --- | --- | --- |
-| **Knip** | vulture | Dead code/unused exports | `knip: false` (opt-in via config) |
-| **tsc/tsgo** | ty | Type checking | `tsc: false` (see D3) |
+| **oxlint+tsgolint** | ty | Type-aware lint (45 rules) | `false` (D3) |
+| **tsgo** | ty (full) | Full type check (session) | `false` (D3) |
+| **Knip** | vulture | Dead code/unused exports | `knip: false` (opt-in) |
 
 #### Semgrep (Security Scanner)
 
@@ -124,8 +140,12 @@ enhancement — runs if installed (`brew install semgrep` or
 
 ### D3: Type Checking Strategy
 
-**Decision**: Skip type checking in PostToolUse hooks. Defer to IDE
-(real-time) and CI (enforcement).
+**Decision**: Two-tool opt-in type safety strategy. Per-file type-aware
+linting via oxlint+tsgolint (45 rules) and session-scoped full type
+checking via tsgo. Both disabled by default. Without oxlint opt-in,
+hooks have no reliable blocking type-aware coverage — Biome's type-aware
+rules are all in the nursery group (experimental, severity "information")
+and provide advisory-only diagnostics via the project domain Scanner.
 
 **The problem**: Biome's type synthesizer is significantly more limited than
 initially documented. The Linear document claimed "~75% of typescript-eslint
@@ -133,55 +153,195 @@ coverage" but this is misleading:
 
 - The 75% figure refers to the detection rate of **one specific rule**
   (`noFloatingPromises`), not coverage of all typescript-eslint rules
-- Biome currently has 15-16 rules in the Project domain, of which
-  ~8 are type-aware (use type inference) and ~8 are project-level analysis
-  (import resolution, dependency checking). Type-aware rules:
-  `noFloatingPromises`, `noMisusedPromises`, `useAwaitThenable`,
-  `noUnnecessaryConditions`, `useArraySortCompare`, `useConsistentEnumValueType`,
-  `useExhaustiveSwitchCases`, `useFind`.
-  Project-level rules: `noUnresolvedImports`, `noImportCycles`,
-  `noDeprecatedImports`, `noPrivateImports`, `noUndeclaredDependencies`,
-  `useImportExtensions`, `useJsonImportAttributes`, `useRegexpExec`
-- typescript-eslint has ~86 type-aware rules
+- Biome has 4-6 type-aware rules, ALL in the **nursery** group with
+  default severity "information" (not "error"). These rules belong to
+  the **project domain**, which activates the Biome Scanner (module
+  graph resolution) with non-trivial performance overhead:
+  - `noFloatingPromises` (~85% detection rate as of v2.1, v2.0.0+)
+  - `noMisusedPromises` (v2.1.0+)
+  - `useExhaustiveCase` (v2.0.0+)
+  - `useAwaitThenable` (v2.3.9+, limited: only checks global Promise
+    class, not custom thenables)
+  - `noUnnecessaryConditions` (v2.3.x+, type-aware narrowing)
+  - `noNestedPromises` (v2.3.15+)
+  Additional type-aware rules are under active development (see
+  umbrella issue #3187, now closed — initial implementation shipped)
+- typescript-eslint has ~59 type-aware rules
 - Biome explicitly states it is "not trying to implement a full-fledged
   type system or a type checker like TypeScript"
 - Biome's type synthesizer is designed as a linting aid, NOT a replacement
   for tsc
 
+**Why this matters for Claude Code hooks**: Claude Code operates as a CLI
+tool and never sees IDE diagnostics. Without type-aware checking in hooks,
+Claude can introduce type-unsafe code (wrong argument types, missing
+properties, async/promise errors) that passes all hook checks. Errors
+only surface at CI (too late — cascading type errors may have spread
+across multiple files in the session).
+
 **Research findings** (2026-02-14):
 
-| Option | Speed | Suitable for Hooks? | Notes |
-| --- | --- | --- | --- |
-| `tsc --noEmit` | 2-5s+ (project) | No - too slow | Baseline, project-wide only |
-| `tsc --incremental` | 2-4.5s | No - marginal improvement | Cache helps but still slow |
-| `tsgo` (typescript-go) | 0.5-1s (~10x faster) | Borderline | Best alternative, will become TS 7.0 |
-| Biome type synthesizer | <100ms | Yes but incomplete | 15-16 Project domain rules (~8 type-aware) vs ~86 in typescript-eslint |
-| Skip in hooks | N/A | N/A | Defer to IDE + CI |
+| Option | Speed | Type Coverage | Suitable for Hooks? | Notes |
+| --- | --- | --- | --- | --- |
+| `tsc --noEmit` | 2-5s+ | Full (~59) | No - too slow | Project-wide |
+| `tsc --incremental` | 2-4.5s | Full | No - marginal | Node ~500ms |
+| `tsgo --noEmit` (cold) | 0.5-4s (10x) | Full (99.9%) | Session only | Full |
+| **oxlint+tsgolint** | **0.2-1s** | **45 rules** | **Yes, opt-in** | **None** |
+| Biome synthesizer | <100ms | 4-6 nursery | Advisory only | Module graph |
+| tsgo LSP daemon | <500ms | Full | Future | No client exists |
 
-**Why skip**: Type checking is fundamentally project-wide (requires the
-full module graph to resolve imports and types). Even tsgo at 0.5-1s adds
-blocking latency to every edit session. The IDE (VSCode + TS language
-server) already provides real-time incremental type checking with
-in-memory caching. CI enforces type safety at merge time. Adding type
-checking to hooks duplicates both layers while degrading developer
-experience.
+#### Tool 1: oxlint+tsgolint — Per-File Type-Aware Linting (opt-in)
 
-**Three-layer type safety strategy**:
+**Architecture**: oxlint (Rust CLI) + tsgolint (Go binary wrapping
+typescript-go). oxlint handles CLI, path traversal, and diagnostic
+printing. tsgolint handles type analysis using the same engine as tsgo.
 
-| Layer | Tool | When | Purpose |
-| --- | --- | --- | --- |
-| IDE | VSCode + TS Server | Real-time | Developer feedback |
-| Hooks | Biome (lint + 15-16 Project domain rules, ~8 type-aware) | Post-edit | Fast formatting/linting |
-| CI | `tsc --noEmit` or `tsgo` | Pre-merge | Enforcement gate |
+**Key constraint**: Runs ONLY type-aware rules — the 45 rules that
+require type information. All non-type-aware rules are disabled to avoid
+overlap with Biome's 430+ lint rules. This resolves the double-reporting
+concern identified in D1 when Biome+Oxlint was rejected as a hybrid.
 
-**Escape hatch**: If a future project requires type checking in hooks,
-the config supports it via `"tsc": true`. The recommended tool would be
-`tsgo` (`npm install -g @typescript/native-preview`) which is 7-10x
-faster than tsc and is the foundation for the official TypeScript 7.0 compiler.
-This is documented but **disabled by default**.
+**Rules covered** (45 type-aware, high-value subset):
 
-**Config impact**: The `typescript.tsc` field defaults to `false` (changed
-from the earlier proposed `true`).
+| Category | Rules | Errors Caught |
+| --- | --- | --- |
+| Promise/async | `no-floating-promises`, `no-misused-*` | Unhandled promise |
+| Type safety | `no-unsafe-argument`, `no-unsafe-assignment` | Type mismatches |
+| Narrowing | `no-unnecessary-type-assertion` | Null access |
+| Other | `no-redundant-type-constituents`, etc. | Subtle misuse |
+
+**What it won't catch** (requires full tsc): Structural type errors like
+"property doesn't exist on this type" or deep generic inference failures.
+These require the full type checker, not lint-level rules.
+
+**Performance**: ~0.2-1s per file on small-medium projects. Go-based
+binary has no Node.js startup overhead. **Hard timeout gate at 2s** — if
+exceeded, skip and emit warning:
+
+```text
+[hook:warning] oxlint+tsgolint exceeded 2s budget on {file}, skipping type-aware checks
+```
+
+**Maturity**: Alpha (as of February 2026). Known OOM and deadlock issues
+on large monorepos. Ships as opt-in (`oxlint_tsgolint: false`) until
+stable. Graceful degradation if not installed.
+
+**Prerequisite**: Requires TypeScript 7.0+ tsconfig semantics. tsgolint
+uses `typescript-go` (the Go port of tsc), which expects TS 7 config
+options. Config options deprecated in TS 6 or removed in TS 7 will not
+work. Projects on TypeScript 5.x need tsconfig migration before opting
+in.
+
+**Stability coupling**: tsgolint shims `typescript-go` internal APIs
+(not public APIs). This means tsgolint's stability is coupled to
+`typescript-go`'s internal implementation details. A `typescript-go`
+internal refactor could break tsgolint without warning, independent of
+tsgolint's own release cycle.
+
+**Invocation**: Configure `.oxlintrc.json` with all categories disabled
+and specific `typescript/*` type-aware rules enabled. The `--type-aware`
+flag adds type-aware rules on top of regular rules — it does NOT replace
+them. To run only type-aware rules, use:
+
+```bash
+oxlint --type-aware --tsconfig tsconfig.json -A all \
+  -D typescript/no-floating-promises \
+  -D typescript/no-misused-promises \
+  -D typescript/await-thenable \
+  -D typescript/no-unsafe-argument \
+  -D typescript/no-unsafe-assignment \
+  -D typescript/no-unsafe-return \
+  -D typescript/no-unsafe-call \
+  -D typescript/no-unnecessary-type-assertion \
+  -D typescript/strict-boolean-expressions \
+  --format json <file>
+```
+
+Or configure in `.oxlintrc.json` (recommended for hooks):
+
+```json
+{
+  "categories": { "correctness": "off", "suspicious": "off", "style": "off", "pedantic": "off", "restriction": "off" },
+  "rules": {
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/no-unsafe-argument": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-return": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/strict-boolean-expressions": "error"
+  }
+}
+```
+
+**Note**: The `--only-type-aware` flag does not exist in oxlint's CLI.
+The `-A all` (allow all) flag disables all non-type-aware rules, then
+`-D` (deny) flags enable specific type-aware rules.
+
+**Config**: `"oxlint_tsgolint": false` in `typescript` config section.
+
+**Biome overlap resolution**: When `oxlint_tsgolint: true`, the hook
+disables Biome's overlapping nursery type-aware rules to prevent
+double-reporting. This is implemented by passing CLI overrides:
+
+```bash
+biome lint \
+  --rule nursery/noFloatingPromises=off \
+  --rule nursery/noMisusedPromises=off \
+  --rule nursery/useAwaitThenable=off \
+  --reporter=json <file>
+```
+
+This avoids duplicate diagnostics AND skips the Biome Scanner overhead
+for these rules. `useExhaustiveCase` is NOT disabled because oxlint
+has no equivalent rule. `noUnnecessaryConditions`, `noImportCycles`,
+and `noNestedPromises` are also kept since oxlint does not cover them.
+
+#### Tool 2: tsgo — Session-Scoped Full Type Checking (opt-in)
+
+**Architecture**: `tsgo --noEmit` runs the full TypeScript type checker
+(Go port, 99.9% of 20,000 TS test cases passing). Session-scoped
+advisory, matching the Semgrep pattern.
+
+**Trigger**: After 3+ TS files modified in the session, run
+`tsgo --noEmit` on the full project. Report type errors as
+`[hook:advisory]`. Session tracking via `/tmp/.tsgo_session_${PPID}`
+with `.done` marker (same pattern as Semgrep).
+
+**Performance**: 0.5-4s one-time block per session (project-dependent).
+tsgo is ~10x faster than tsc. Acceptable as a one-time session-scoped
+cost, not acceptable per-edit.
+
+**Maturity**: Preview (`@typescript/native-preview`). More stable than
+oxlint+tsgolint — backed by Microsoft, foundation for TypeScript 7.0.
+
+**Output**: Advisory only. Type errors are reported but do not block or
+trigger subprocess delegation. The reasoning: full tsc-level errors may
+include false positives or complex structural issues that the subprocess
+cannot fix reliably. Advisory surfaces awareness; CI enforces.
+
+**Config**: `"tsgo": false` in `typescript` config section. (Replaces
+the previous `"tsc": false` escape hatch with a dedicated field.)
+
+#### Four-Layer Type Safety Strategy
+
+| Layer | Tool | When | Coverage | Default |
+| --- | --- | --- | --- | --- |
+| IDE | VSCode + TS Server | Real-time | Full | Always on |
+| Hooks (fast) | Biome+**oxlint** | Per-edit | Lint types | Biome: on, oxlint: **opt-in** |
+| Hooks (full) | **tsgo --noEmit** | Session (3+) | Full types | **Opt-in** |
+| CI | `tsc --noEmit` or `tsgo` | Pre-merge | Full | Always on |
+
+**Config impact**: The `typescript.tsc` field is replaced by two fields:
+`"oxlint_tsgolint": false` (per-file type-aware linting) and
+`"tsgo": false` (session-scoped full checking). Both default to `false`.
+
+**Future**: When tsgo LSP matures (`tsgo --lsp --stdio`), a daemon-based
+approach could deliver per-file full type checking at <500ms after
+warm-up. This would require a custom thin LSP client (~200-400 LOC) and
+is documented as a future enhancement, not a current deliverable.
 
 ### D4: File Scope and Extension Handling
 
@@ -189,7 +349,7 @@ from the earlier proposed `true`).
 
 #### Full Pipeline (Biome + Semgrep)
 
-- `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`
+- `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`
 - `.css` (Biome only — Semgrep not applicable for CSS)
 
 #### Semgrep Only (SFC files)
@@ -215,6 +375,19 @@ in their CI pipeline.
 **Future**: When Biome adds SFC and SCSS support, the tiering can be
 adjusted via config.
 
+#### SFC Coverage Warning
+
+When editing `.vue`, `.svelte`, or `.astro` files without Semgrep installed,
+the hook emits a one-time session warning:
+
+```text
+[hook:warning] No linter available for .vue files. Install semgrep for security scanning: brew install semgrep
+```
+
+This fires once per SFC extension per session (tracked via
+`/tmp/.sfc_warned_${ext}_${PPID}`). Without Semgrep, SFC files receive
+zero lint coverage since Biome cannot parse SFC files.
+
 ### D5: Framework Support
 
 **Decision**: Support multiple frameworks (React, Vue, Svelte, Astro,
@@ -229,12 +402,16 @@ Next.js).
 
 **Decision**: Biome takes over JSON formatting when TypeScript is enabled.
 
-- When `typescript.enabled: true` in config.json, Biome formats JSON/JSONC
-  files instead of jaq
-- jaq remains as fallback for projects without Biome (when `typescript.enabled:
-  false`)
+- When `typescript.enabled: true` in config.json AND Biome is available,
+  Biome formats JSON/JSONC files instead of jaq
+- When `typescript.enabled: true` but Biome is not installed, jaq is used
+  as fallback (prevents a formatting gap during the setup window between
+  `init-typescript.sh` and `npm install`)
+- jaq remains the default for projects without TypeScript enabled
+  (`typescript.enabled: false` or `typescript: false`)
 - Biome's JSON formatting is Prettier-compatible
-- Removes one code path from the hook for TS-enabled projects
+- Implementation: the JSON case branch checks Biome availability before
+  delegating; falls back to jaq if Biome is absent
 
 ### D7: Architecture - Same Script, Named Function
 
@@ -245,8 +422,9 @@ Next.js).
 
 1. `config.json` already has `"typescript": false` placeholder ready to flip
 2. Three-phase pattern (format, collect, delegate) is identical
-3. A new case branch (`*.ts | *.tsx | *.js | *.jsx | *.mjs | *.cjs | *.css)
-   handle_typescript ;;`) follows the existing dispatch pattern
+3. A new case branch (`*.ts | *.tsx | *.js | *.jsx | *.mjs | *.cjs | *.mts
+   | *.cts | *.css) handle_typescript ;;`) follows the existing dispatch
+   pattern
 4. A separate script would require a second PostToolUse hook registration
 5. Named function keeps the main case statement clean (the Python handler
    is already ~170 lines inline; adding ~150-200 more inline would push
@@ -257,7 +435,7 @@ Next.js).
 | Location | Lines | Description |
 | --- | --- | --- |
 | `handle_typescript()` | ~150-200 | New function (Phase 1-3 for TS) |
-| `is_typescript_enabled()` | ~10 | New config function (handles nested object) |
+| `is_typescript_enabled()` | ~10 | New config function (nested object) |
 | Main `file_type` case | ~5 | New case branch dispatching to function |
 | `spawn_fix_subprocess()` | ~5 | `format_cmd` case for typescript |
 | `rerun_phase1()` | ~10 | Biome re-format after subprocess |
@@ -299,7 +477,7 @@ via `biome_nursery` field.
 
 Nursery rules are Biome's equivalent of Ruff's `--preview` flag:
 
-- ~72 experimental rules out of 436+ total (~16%)
+- ~72 nursery rules out of 436+ total (~16%)
 - **Not subject to semver** - breaking changes can occur without warning
 - May have bugs or performance problems
 - Can be removed entirely between versions
@@ -311,21 +489,35 @@ Nursery rules are Biome's equivalent of Ruff's `--preview` flag:
 | `biome_nursery` value | Behavior | Analogy |
 | --- | --- | --- |
 | `"off"` | Only stable rules | Conservative |
-| `"warn"` (default) | Nursery reported as advisory, non-blocking | Like ruff --preview |
-| `"error"` | Nursery treated as errors, trigger subprocess | Maximum opinionatedness |
+| `"warn"` (default) | Nursery as advisory, non-blocking | Like ruff --preview |
+| `"error"` | Nursery as errors, triggers subprocess | Max opinionatedness |
 
 #### Biome Config Mapping
 
 ```json
 // biome_nursery: "off"
-{ "linter": { "rules": { "all": true } } }
+{ "linter": { "rules": { "recommended": true, "a11y": "error", "complexity": "warn", "correctness": "error", "performance": "warn", "security": "error", "style": "warn", "suspicious": "error" } } }
 
 // biome_nursery: "warn"
-{ "linter": { "rules": { "all": true, "nursery": "warn" } } }
+{ "linter": { "rules": { "recommended": true, "a11y": "error", "complexity": "warn", "correctness": "error", "performance": "warn", "security": "error", "style": "warn", "suspicious": "error", "nursery": "warn" } } }
 
 // biome_nursery: "error"
-{ "linter": { "rules": { "all": true, "nursery": "error" } } }
+{ "linter": { "rules": { "recommended": true, "a11y": "error", "complexity": "warn", "correctness": "error", "performance": "warn", "security": "error", "style": "warn", "suspicious": "error", "nursery": "error" } } }
 ```
+
+#### Nursery Mismatch Validation
+
+The hook validates at startup that `biome_nursery` in `config.json` matches
+the `nursery` value in `biome.json`. If they diverge, the hook emits:
+
+```text
+[hook:warning] config.json biome_nursery='warn' but biome.json nursery='error' — behavior follows biome.json
+```
+
+This prevents silent misconfiguration where the user thinks nursery rules
+are advisory but `biome.json` actually treats them as errors (triggering
+unexpected subprocess spawns). The validation adds <5ms overhead (single
+file read of `biome.json`).
 
 ### D10: Auto-Fix Tiers - Configurable
 
@@ -334,12 +526,19 @@ Nursery rules are Biome's equivalent of Ruff's `--preview` flag:
 
 | `biome_unsafe_autofix` | Phase 1 Command | Behavior |
 | --- | --- | --- |
-| `false` (default) | `biome check --write` | Safe fixes only (no semantic changes) |
-| `true` | `biome check --write --unsafe` | All fixes including semantic changes |
+| `false` (default) | `biome check --write` | Safe fixes only (no semantic) |
+| `true` | `biome check --write --unsafe` | All fixes incl. semantic |
 
 This mirrors the Python hook's approach: Phase 1 runs `ruff check --fix`
 (safe), while Phase 3 subprocess handles unsafe fixes. The configurable
 option allows aggressive users to enable unsafe auto-fix in Phase 1.
+
+**oxlint compatibility note**: When `oxlint_tsgolint: true`, unsafe
+auto-fix (`biome_unsafe_autofix: true`) is **not recommended**. Biome's
+`useImportType` unsafe auto-fix can change `import { Foo }` to
+`import type { Foo }`, which may affect oxlint's type resolution
+(known issue biomejs/biome#4640). The default `biome_unsafe_autofix:
+false` is critical for oxlint compatibility.
 
 ### D11: Scan Scope by Tool
 
@@ -347,12 +546,27 @@ option allows aggressive users to enable unsafe auto-fix in Phase 1.
 
 | Tool | Scope | Trigger | Blocking? |
 | --- | --- | --- | --- |
-| Biome (lint) | Per-file | Every Edit/Write on TS/JS | Yes (triggers subprocess) |
+| Biome (lint) | Per-file | Every Edit/Write on TS/JS | Yes (subprocess) |
 | Biome (format) | Per-file | Every Edit/Write on TS/JS | Silent (Phase 1) |
-| Semgrep | Session-scoped | After 3+ TS files modified (scans all modified) | Advisory only |
-| tsc/tsgo | Skipped in hooks | Deferred to IDE + CI | N/A (disabled by default) |
-| Knip | Session-scoped | After 3+ TS files modified (if `knip: true`) | Advisory only (CI-recommended, off by default) |
+| oxlint+tsgolint | Per-file | Edit/Write if `oxlint_tsgolint` | Yes (subprocess, 2s) |
+| Semgrep | Session | After 3+ TS files (all modified) | Advisory only |
+| tsgo | Session | After 3+ TS files (if `tsgo`) | Advisory only |
+| Knip | Session | After 3+ TS files (if `knip`) | Advisory (CI-rec, off) |
 | jscpd | Session-scoped | After 3+ files modified | Advisory only (existing) |
+
+**Session tracking mechanism**: Semgrep, tsgo, and Knip use the same
+`/tmp/` temp file pattern as jscpd for session-scoped tracking. Modified
+TS files are appended to `/tmp/.semgrep_session_${PPID}` (and
+`/tmp/.tsgo_session_${PPID}`, `/tmp/.knip_session_${PPID}` if enabled).
+When the file reaches 3+ entries, the next TS file edit triggers the
+session-scoped scan. A `.done` marker prevents re-triggering within the
+same session.
+
+**oxlint+tsgolint timeout gate**: Per-file oxlint+tsgolint invocations
+are wrapped in `timeout 2s`. If the timeout is exceeded (exit 124), the
+hook emits `[hook:warning] oxlint+tsgolint exceeded 2s budget` and
+skips type-aware checking for that file. The session-scoped tsgo check
+serves as a safety net for skipped per-file checks.
 
 ### D12: Model Selection - Shared Patterns
 
@@ -363,25 +577,27 @@ both Python and TypeScript violations.
 
 | Violation Type | Model | Examples |
 | --- | --- | --- |
-| Simple auto-fixable | Haiku | Unused vars, import ordering, formatting leftovers |
-| Semantic / complexity | Sonnet | Biome complexity rules, type-aware rules (`noFloatingPromises`, `useAwaitThenable`), React hook deps (`useExhaustiveDependencies`) |
+| Simple auto-fixable | Haiku | Unused vars, imports, formatting |
+| Semantic / complex | Sonnet | Complexity, type-aware, hook deps |
+| Type-aware (oxlint) | Sonnet | oxlint type-aware violations |
 | Complex / high volume | Opus | Volume >5 violations of any type |
 
-**Note**: Since type checking is deferred to IDE + CI (D3), there are no
-tsc error codes in the model selection patterns. If `tsc: true` is enabled
-as an escape hatch, tsc errors (TS2322, TS2345, etc.) would route to opus.
+**Note**: oxlint+tsgolint type-aware violations route to sonnet because
+they require semantic understanding to fix (type mismatches, async
+patterns, null safety). tsgo advisory output does NOT trigger subprocess
+delegation — it is informational only.
 
 #### Updated Pattern Config
 
 ```json
 "model_selection": {
-  "sonnet_patterns": "C901|PLR[0-9]+|PYD[0-9]+|FAST[0-9]+|ASYNC[0-9]+|unresolved-import|MD[0-9]+|D[0-9]+|complexity|useExhaustiveDependencies|noFloatingPromises|useAwaitThenable",
+  "sonnet_patterns": "C901|PLR[0-9]+|PYD[0-9]+|FAST[0-9]+|ASYNC[0-9]+|unresolved-import|MD[0-9]+|D[0-9]+|complexity|useExhaustiveDependencies|noFloatingPromises|useAwaitThenable|no-unsafe-argument|no-unsafe-assignment|no-unsafe-return|no-unsafe-call|no-unsafe-member-access|no-unsafe-type-assertion|no-unsafe-unary-minus|no-unsafe-enum-comparison|no-misused-promises|no-unnecessary-type-assertion|no-unnecessary-type-arguments|no-unnecessary-boolean-literal-compare|strict-boolean-expressions|await-thenable|no-unnecessary-condition|no-confusing-void-expression|no-base-to-string|no-redundant-type-constituents|no-duplicate-type-constituents|no-floating-promises|no-implied-eval|no-deprecated|no-for-in-array|no-misused-spread|no-array-delete|switch-exhaustiveness-check|unbound-method|return-await|only-throw-error|require-await|require-array-sort-compare|restrict-plus-operands|restrict-template-expressions|prefer-promise-reject-errors|promise-function-async",
   "opus_patterns": "unresolved-attribute|type-assertion",
   "volume_threshold": 5
 }
 ```
 
-Biome-specific type-aware rules route to sonnet. The opus tier is
+Biome and oxlint type-aware rules route to sonnet. The opus tier is
 reserved for complex architectural violations and high-volume batches.
 
 ### D13: Config Shape - TS Nested, Others Flat
@@ -406,7 +622,8 @@ remain as simple boolean toggles.
       "js_runtime": "auto",
       "biome_nursery": "warn",
       "biome_unsafe_autofix": false,
-      "tsc": false,
+      "oxlint_tsgolint": false,
+      "tsgo": false,
       "semgrep": true,
       "knip": false
     }
@@ -452,6 +669,7 @@ languages (Python, Shell, etc.) which remain as simple boolean toggles.
 **New protected files**:
 
 - `biome.json` - Biome linter/formatter configuration
+- `.oxlintrc.json` - oxlint configuration (if used)
 - `.semgrep.yml` - Semgrep curated security ruleset (local, 5-10 rules)
 - `knip.json` or `knip.config.ts` - Knip dead code detection config
 
@@ -470,6 +688,7 @@ languages (Python, Shell, etc.) which remain as simple boolean toggles.
   ".ruff.toml",
   "ty.toml",
   "biome.json",
+  ".oxlintrc.json",
   ".semgrep.yml",
   "knip.json"
 ]
@@ -521,7 +740,8 @@ same patterns as existing Python hooks.
 | Biome (lint) | Yes | Yes (Phase 2) | Fast, deterministic |
 | Semgrep | No | Yes (session-scoped advisory) | 5-15s with --config auto; 1-3s/file with local ruleset |
 | Knip | No | Yes (session-scoped) | Project-scoped, 10-60s |
-| tsc/tsgo | No | No (deferred) | IDE + CI only |
+| oxlint+tsgolint | No | Yes (per-file, opt-in) | Type-aware lint, 2s timeout gate |
+| tsgo | No | Yes (session-scoped advisory, opt-in) | Full type checking after 3+ TS files |
 | jscpd | Yes (existing) | Yes (existing) | Already in pre-commit |
 
 **INTENTIONAL EXCLUSIONS update**: The comment section at the bottom of
@@ -535,7 +755,8 @@ same patterns as existing Python hooks.
 # - flake8-pydantic: Niche Pydantic feedback, real-time via CC hooks
 # - semgrep: Session-scoped security scanning, 5-15s with --config auto
 # - knip: Project-scoped dead code analysis, 10-60s too slow for commit
-# - tsc/tsgo: Type checking deferred to IDE (real-time) and CI (gate)
+# - oxlint+tsgolint: Per-file type-aware lint, opt-in in CC hooks only
+# - tsgo: Session-scoped type checking advisory, opt-in in CC hooks only
 ```
 
 **JSON formatting in pre-commit**: Stays jaq. The D6 Biome JSON takeover
@@ -559,7 +780,7 @@ while making TS activation straightforward.
   installed)
 - `config.json` with `"typescript": false` placeholder (existing)
 
-**Created by init process** (`make init-typescript` or documented steps):
+**Created by init process** (`scripts/init-typescript.sh` or documented steps):
 
 - `biome.json` - Biome configuration (see Q2)
 - `package.json` - with `@biomejs/biome` as devDependency
@@ -621,19 +842,115 @@ files should be included in duplicate detection just like Python and
 Shell. The `src/` scan directory is shared by both Python and TypeScript
 files in the template structure.
 
+## Full Coverage Dependencies
+
+For zero-warning, zero-skip operation with all lint coverage enabled:
+
+| Tool | Install | Purpose | Without It |
+| --- | --- | --- | --- |
+| **jaq** | `brew install jaq` | JSON parsing (existing) | Hook cannot run |
+| **@biomejs/biome** | `npm i -D @biomejs/biome` | Lint + format (TS/JS/CSS/JSON) | TS handler skipped entirely |
+| **semgrep** | `brew install semgrep` or `pip install semgrep` | Security scanning + SFC coverage | SFC files get zero coverage; [hook:warning] emitted |
+
+Optional (off by default, opt-in via config.json):
+
+| Tool | Install | Config Flag | Purpose |
+| --- | --- | --- | --- |
+| **oxlint+tsgolint** | `npm i -D oxlint oxlint-tsgolint` | `"oxlint_tsgolint": true` | Per-file type-aware linting (45 rules, see D3). Requires TS 7.0+ tsconfig |
+| **tsgo** | `npm i -g @typescript/native-preview` | `"tsgo": true` | Session-scoped full type checking (see D3) |
+| **knip** | `npm i -D knip` | `"knip": true` | Dead code detection (CI-recommended) |
+
+## Files Modified (Implementation Checklist)
+
+| File | Action | Description |
+| --- | --- | --- |
+| `.claude/hooks/multi_linter.sh` | Modify | Add `handle_typescript()` function (~150-200 lines), case branch, satellite functions |
+| `.claude/hooks/config.json` | Modify | Add `biome.json`, `.semgrep.yml`, `knip.json` to `protected_files`; add `oxlint_tsgolint` and `tsgo` fields; update `sonnet_patterns` with TS + oxlint rules |
+| `.claude/hooks/protect_linter_configs.sh` | Modify | Recognize new protected config files |
+| `.claude/hooks/test_hook.sh` | Modify | Add 16+ TypeScript unit tests (including oxlint+tsgolint and tsgo tests) |
+| `.pre-commit-config.yaml` | Modify | Add `biome-format` and `biome-lint` hooks; extend jscpd file pattern; update INTENTIONAL EXCLUSIONS |
+| `.jscpd.json` | Modify | Add `typescript`, `javascript`, `tsx`, `jsx`, `css` to format list |
+| `.gitignore` | Modify | Add TS patterns (`dist/`, `.next/`, `*.tsbuildinfo`, etc.) |
+| `CLAUDE.md` | Modify | Add `biome.json`, `.semgrep.yml`, `knip.json` to protected files list |
+| `scripts/init-typescript.sh` | Create | Init script that creates `biome.json`, `package.json`, `tsconfig.json`, updates `config.json` |
+| `biome.json` | Create (by init) | Biome configuration template (see Q2) |
+| `package.json` | Create (by init) | Minimal package.json with `@biomejs/biome` devDependency |
+| `tsconfig.json` | Create (by init) | Minimal TypeScript compiler configuration |
+| `.semgrep.yml` | Create (by init) | Curated security ruleset (see Q3) |
+
 ## Phase Mapping: Python to TypeScript
 
 | Phase | Python | TypeScript |
 | --- | --- | --- |
 | **Phase 1: Auto-Format** | `ruff format` + `ruff check --fix` | `biome check --write` (or `--write --unsafe` if configured) |
 | **Phase 2a: Primary lint** | `ruff check --preview --output-format=json` | `biome lint --reporter=json` |
-| **Phase 2b: Type checking** | `ty check --output-format gitlab` | Skipped (deferred to IDE + CI). Biome's ~8 type-aware rules (out of 15-16 Project domain rules) provide baseline coverage |
+| **Phase 2b: Type-aware linting** | `ty check --output-format gitlab` | oxlint+tsgolint (45 type-aware rules, per-file, opt-in via `oxlint_tsgolint: true`). Biome's type-aware nursery rules provide advisory baseline when oxlint disabled. tsgo session-scoped advisory (opt-in via `tsgo: true`) |
 | **Phase 2c: Duplicate detection** | `jscpd` (session-scoped) | `jscpd` (session-scoped, existing) |
 | **Phase 2d: Domain-specific** | `flake8 --select=PYD` (Pydantic) | N/A (no TS equivalent) |
 | **Phase 2e: Dead code** | `vulture` | `knip` (CI-recommended, opt-in via `knip: true` in config) |
 | **Phase 2f: Security** | `bandit` | `semgrep --json --config .semgrep.yml` (session-scoped, advisory) |
 | **CSS: Format + Lint** | N/A | `biome check --write` + `biome lint --reporter=json` (same as TS/JS) |
 | **Phase 3: Delegate** | `claude -p` subprocess | `claude -p` subprocess (same mechanism) |
+
+### TypeScript Subprocess Prompt
+
+The subprocess receives a prompt parallel to the Python/Shell examples
+documented in the README. Key differences:
+
+**Format command**: `biome format --write <file>`
+
+**Linter field**: `"biome"` for Biome violations, `"oxlint"` for
+oxlint+tsgolint type-aware violations.
+
+**TS-specific fix strategies** (included in subprocess prompt when
+relevant violation types are present):
+
+| Violation | Fix Strategy |
+| --- | --- |
+| `useExhaustiveDependencies` | Add missing deps to array, or extract values to `useRef`/`useCallback` |
+| `noFloatingPromises` | Add `await`, `.catch()`, or `void` prefix |
+| `no-unsafe-argument` / `no-unsafe-assignment` (oxlint) | Add explicit type annotations or type guards |
+| `strict-boolean-expressions` (oxlint) | Add explicit null/undefined checks or `Boolean()` |
+| `useAwaitThenable` | Remove unnecessary `await` on non-Promise values |
+| `noDoubleEquals` | Replace `==` with `===` (and `!=` with `!==`) |
+
+**Example TypeScript subprocess prompt**:
+
+```text
+You are a code quality fixer. Fix ALL violations listed below in ./src/api/handler.ts.
+
+VIOLATIONS:
+[
+  {
+    "line": 12,
+    "column": 3,
+    "code": "lint/suspicious/noDoubleEquals",
+    "message": "Use === instead of ==",
+    "linter": "biome"
+  },
+  {
+    "line": 28,
+    "column": 5,
+    "code": "typescript/no-floating-promises",
+    "message": "Promises must be awaited, returned, or explicitly ignored with void",
+    "linter": "oxlint"
+  }
+]
+
+RULES:
+1. Use targeted Edit operations only - never rewrite the entire file
+2. Fix each violation at its reported line/column
+3. After fixing, run the formatter:
+   biome format --write './src/api/handler.ts'
+4. Verify by re-running the linter
+5. If a violation cannot be fixed, explain why
+
+FIX STRATEGIES:
+- noFloatingPromises: Add `await`, `.catch()`, or `void` prefix
+- no-unsafe-argument: Add explicit type annotations or type guards
+
+Do not add comments explaining fixes. Do not refactor beyond what's needed.
+```
 
 ## Performance Budget
 
@@ -644,14 +961,23 @@ must stay within the same performance envelope as the Python handler.
 
 ### Per-Edit Blocking Time Comparison
 
-| Phase | Python | TypeScript | Notes |
-| --- | --- | --- | --- |
-| **Phase 1: Auto-Format** | ~300ms (ruff format + ruff check --fix) | ~100ms (`biome check --write`) | TS is faster; single combined command |
-| **Phase 2: Blocking** | ~500ms (ruff + ty + flake8 + vulture + bandit) | ~100ms (biome lint only) | Advisory tools are session-scoped, not per-edit |
-| **Phase 2: Session-scoped** | jscpd (~2-5s, once/session) | jscpd + Semgrep (3-9s) + Knip (10-60s) | One-time blocks, not per-edit |
-| **Phase 3: Subprocess** | ~5-25s (model-dependent) | ~5-25s (same mechanism) | Identical subprocess model |
-| **Verify** | ~500ms (rerun Phase 1 + 2) | ~200ms (biome only, skip advisory) | TS skips Semgrep in verify |
-| **Total per-edit blocking** | **~0.8s + subprocess** | **~0.4s + subprocess** | TS slightly faster per-edit |
+| Phase | Python | TypeScript (Biome only) | TypeScript (+ oxlint opt-in) | Notes |
+| --- | --- | --- | --- | --- |
+| **Phase 1: Auto-Format** | ~300ms (ruff format + ruff check --fix) | ~100ms (`biome check --write`) | ~100ms | TS is faster; single combined command |
+| **Phase 2: Blocking** | ~500ms (ruff + ty + flake8 + vulture + bandit) | ~100-300ms (biome lint + Scanner, note 1) | ~300ms-1.1s (biome + oxlint) | oxlint adds ~200ms-1s when enabled |
+| **Phase 2: Session-scoped** | jscpd (~2-5s, once/session) | jscpd + Semgrep (3-9s) + Knip (10-60s) | + tsgo (0.5-4s) | One-time blocks, not per-edit |
+| **Phase 3: Subprocess** | ~5-25s (model-dependent) | ~5-25s (same mechanism) | ~5-25s | Identical subprocess model |
+| **Verify** | ~500ms (rerun Phase 1 + 2) | ~200ms (biome only, skip advisory) | ~400ms-1.2s (biome + oxlint) | Verify re-runs blocking tools only |
+| **Total per-edit blocking** | **~0.8s + subprocess** | **~0.4-0.6s + subprocess** | **~0.6-1.4s + subprocess** | With oxlint, comparable to Python |
+
+**Note 1 (Scanner overhead)**: When nursery type-aware rules are enabled
+(the default `biome_nursery: "warn"`), Biome activates its Scanner module
+to build a module graph for type inference. This adds an estimated
++50-200ms overhead (project-size dependent) on top of the base ~100ms
+biome lint time. When `oxlint_tsgolint: true`, these nursery rules are
+disabled (see D3), eliminating Scanner overhead. **Post-implementation
+action**: Measure actual Scanner overhead on representative projects and
+update this table (see Manual Verification Checks).
 
 ### Key Performance Decisions
 
@@ -660,10 +986,19 @@ must stay within the same performance envelope as the Python handler.
   Pre-commit uses two separate commands for independent disable control.
   The pre-commit overhead is acceptable since it runs at commit-time, not
   per-edit
-- **Verification skips advisory**: `rerun_phase2()` for TypeScript only
-  re-runs Biome lint (~100ms), not Semgrep. Advisory tools don't affect
-  the pass/fail decision, so re-running them during verification adds
-  unnecessary latency
+- **Verification skips advisory**: `rerun_phase2()` for TypeScript
+  re-runs Biome lint + oxlint+tsgolint (if enabled), not Semgrep or tsgo.
+  Advisory tools don't affect the pass/fail decision, so re-running them
+  during verification adds unnecessary latency. oxlint IS re-run in
+  verify because its violations trigger subprocess delegation
+- **Biome Scanner overhead**: Biome's type-aware nursery rules
+  (`noFloatingPromises`, `noMisusedPromises`, `useAwaitThenable`, etc.)
+  belong to the `project` domain, which activates the Biome Scanner.
+  The Scanner builds a module graph for type inference. This overhead
+  is not measured in the Phase 2 timing above. When `oxlint_tsgolint:
+  true`, the hook disables these rules (see D3), eliminating Scanner
+  overhead. When oxlint is disabled, Scanner overhead is accepted as
+  a trade-off for advisory-level type-aware diagnostics
 - **Phase 1 workload reduction**: Biome's combined format+lint auto-fix
   is estimated to reduce subprocess triggers by 50-70% (vs Python's
   40-50%), because `biome check --write` handles more rule categories
@@ -681,6 +1016,7 @@ must stay within the same performance envelope as the Python handler.
 | --- | --- | --- | --- | --- |
 | jscpd | 3+ files modified | Full `src/` scan | ~2-5s | Existing, unchanged |
 | Semgrep | 3+ TS files modified | All modified TS files | ~3-9s (1-3s/file) | New, uses local ruleset |
+| tsgo | 3+ TS files modified (if `tsgo: true`) | Full project (`tsgo --noEmit`) | ~0.5-4s | New, advisory only |
 | Knip | 3+ TS files modified (if `knip: true`) | Full project graph | ~10-60s | CI-recommended, off by default in hooks |
 
 Session-scoped tools block once per session at the threshold trigger.
@@ -696,7 +1032,9 @@ Biome's type synthesizer is **misleading**:
 
 - The 75% figure is the detection rate of **one specific rule**
   (`noFloatingPromises`), not coverage of all typescript-eslint rules
-- Biome has 15-16 Project domain rules (of which ~8 are type-aware) vs ~86 in typescript-eslint
+- Biome has a small number of type-aware rules shipped in production
+  (3 as of v2.1, with 22 planned per issue #3187) vs ~59 type-aware
+  rules in typescript-eslint
 - Biome's "Biotype" type synthesizer is a "rudimentary type synthesiser"
   that reimplements a minimal subset of TypeScript's type checker in Rust
 - Biome explicitly states users should continue using tsc for type safety
@@ -718,11 +1056,16 @@ Biome's type synthesizer is **misleading**:
 
 ### Biome + Oxlint Coexistence
 
-- **Not recommended** as dual primary linters
-- Both reimplement ESLint rules, causing double-reporting
-- Different type-aware strategies: Biome = custom Rust synthesizer,
-  Oxlint = tsgolint (Go wrapper around typescript-go)
-- Community consensus: choose one, not both
+- **Not recommended as dual primary linters** — both reimplement ESLint
+  rules, causing double-reporting of non-type-aware violations
+- Different type-aware strategies: Biome = custom Rust synthesizer (2
+  rules), Oxlint = tsgolint (Go wrapper around typescript-go, 45 rules)
+- Community consensus: choose one for general linting, not both
+- **D3 resolution**: Use Biome for formatting + non-type-aware linting,
+  oxlint for type-aware rules ONLY. This scoped usage avoids
+  double-reporting because the rule sets don't overlap. oxlint is
+  configured to run only its 45 type-aware rules, not its 520+
+  non-type-aware rules
 
 **Source**: oxc-project/oxc discussions #1709, biomejs/biome discussions #1281
 
@@ -749,14 +1092,294 @@ support.
 **Winner**: Knip - most comprehensive, actively maintained, industry
 recommendation (Effective TypeScript).
 
-## Open Questions
+## Consequences
+
+### Positive
+
+- TypeScript files get the same aggressive lint-on-edit treatment as Python
+- Single-binary Biome matches Ruff's developer experience
+- Security scanning (Semgrep) provides immediate feedback on vulnerabilities
+- Dead code detection (Knip) prevents unused export accumulation
+- Configurable strictness allows teams to tune opinionatedness
+- Protected config files prevent accidental rule weakening
+- Pre-commit Biome hooks provide commit-time enforcement matching Python
+- Opt-in TS layer keeps the template clean for Python-only users
+- CSS files get formatting + linting via the same Biome pipeline (31
+  stable rules, no extra dependency)
+- Graceful degradation in pre-commit (skip when Biome not installed)
+  eliminates manual YAML commenting/uncommenting
+- Per-edit blocking time without oxlint is lower than Python (~0.4s vs
+  ~0.8s) because Biome consolidates format+lint into a single `biome check
+  --write` command
+- With oxlint+tsgolint opt-in, per-edit blocking (~0.6-1.4s) is comparable
+  to Python's ~0.8s while providing 45 type-aware rules that catch common
+  type errors Claude Code would otherwise miss
+- Session-scoped tsgo provides full type checking as advisory, catching
+  structural type errors that lint rules cannot detect
+
+### Negative
+
+- More dependencies to install (Biome required; Semgrep, Knip optional)
+- Increased hook execution time for session-scoped tools (Semgrep 3-9s
+  if installed) on the trigger edit (3rd TS file modified). Knip
+  (10-60s) is CI-recommended and off by default in hooks
+- Vue/Svelte/Astro files get limited coverage (Semgrep only, no Biome
+  formatting/linting; zero pre-commit coverage since Semgrep is
+  CC-hooks-only)
+- Nursery rules may cause unexpected advisory noise
+- config.json structure becomes asymmetric (TS nested, others flat)
+- SCSS/Sass/Less files have no hook coverage until Biome ships SCSS
+  parser support
+- CSS Modules may trigger false positives (`:global()` pseudo-class
+  flagged as unknown)
+- oxlint+tsgolint is alpha — known OOM/deadlock issues on large monorepos.
+  Mitigated by opt-in default and 2s timeout gate
+- With oxlint enabled, per-edit blocking time increases from ~0.4s to
+  ~0.6-1.4s (still comparable to Python's ~0.8s)
+- Pre-commit Biome wrapper uses `command -v` which may behave differently
+  in some shell environments
+
+### Risks
+
+- Biome's JSON reporter format is documented as "experimental and subject
+  to changes in patch releases." **Mitigation**: Pin the expected JSON
+  schema structure in unit tests (tests #2, #3, #7-9 validate output
+  patterns). If Biome changes the schema, tests break immediately.
+  RDJSON (`--reporter=rdjson`, standardized Reviewdog format) was
+  evaluated as an alternative but rejected because it lacks the
+  `severity` field needed for model selection logic. Document known-good
+  Biome version (2.3.x) in the dependency table
+- Semgrep's `--config auto` ruleset may add noisy rules over time
+- Knip defaults to CI-only (`knip: false`). Users who opt-in to
+  hooks-based Knip face session-scoped scanning that may miss dead
+  code introduced in the first 2 files
+- Biome's 4-6 type-aware rules are all in nursery (experimental, severity
+  "information") and do not provide reliable blocking coverage. oxlint's
+  45 rules improve this significantly but still don't match full tsc
+  (~59 typescript-eslint type-aware rules equivalent)
+- oxlint+tsgolint alpha stability risk — may produce false positives,
+  crash, or deadlock on specific codebases. The 2s timeout gate and
+  opt-in default mitigate production impact
+- oxlint+tsgolint supply chain coupling — tsgolint shims `typescript-go`
+  internal APIs (not public APIs). A `typescript-go` internal refactor
+  could break tsgolint without warning, independent of tsgolint's own
+  release cycle. This compounds the alpha stability risk above
+- oxlint+tsgolint requires TypeScript 7.0+ tsconfig semantics. Projects
+  on TypeScript 5.x need tsconfig migration before opting in
+- Init process for TS activation may conflict with existing `package.json`
+  in projects that already have one
+- **Rollback mitigation**: Set `typescript.enabled: false` in `config.json`
+  to instantly disable the TS handler. Pin Biome version in `package.json`
+  (`"@biomejs/biome": "2.3.x"`) to avoid breaking changes from major
+  version bumps
+
+## Clarification Summary
+
+### 1. Problem
+
+The cc-hooks-portable-template provides aggressive, automated code quality
+enforcement for Python and other languages via PostToolUse hooks, but has
+no TypeScript/JavaScript coverage. As the template is intended for
+projects that include TypeScript codebases, this gap means TypeScript
+files bypass the Boy Scout Rule (edit a file, own all its violations)
+that the hook system enforces for every other supported language.
+
+### 2. Root Cause
+
+The TypeScript linting ecosystem has been fragmented and fast-moving,
+with no clear "Ruff equivalent" until recently. The Python hook benefits
+from Ruff's single-binary, opinionated, Rust-based design that combines
+formatting, linting, and auto-fixing in one tool with native JSON output.
+TypeScript lacked a tool with equivalent philosophy, performance, and
+integration characteristics suitable for a synchronous PostToolUse hook
+that must complete within a strict performance budget.
+
+Additionally, TypeScript type checking is fundamentally project-wide (it
+requires the full module graph), making it incompatible with the per-file
+hook execution model. This created uncertainty about how to achieve
+equivalent depth without the `ty` (type checker) equivalent that the
+Python stack enjoys.
+
+### 3. Solution
+
+Expand the existing `multi_linter.sh` hook with a TypeScript handler
+using this tool stack:
+
+**Core (per-file, blocking)**:
+
+- **Biome** (format + lint): Single Rust binary, `biome check --write`
+  for Phase 1, `biome lint --reporter=json` for Phase 2. All stable
+  rules enabled (all stable groups set to `"error"` or `"warn"`),
+  nursery configurable
+  (`off`/`warn`/`error`). Two-tier auto-fix configurable (safe-only
+  default, unsafe optional). Handles `.ts`, `.tsx`, `.js`, `.jsx`,
+  `.mjs`, `.cjs`, `.mts`, `.cts` files and takes over JSON formatting
+  when enabled (with jaq fallback when Biome is not installed)
+
+**Supplemental (session-scoped advisory)**:
+
+- **Semgrep** (security, optional enhancement): Session-scoped advisory
+  scanning (after 3+ TS files, scans all modified files) via
+  `semgrep --json --config .semgrep.yml`. Uses curated local ruleset
+  (5-10 rules, 1-3s/file) instead of `--config auto` (5-15s). Catches
+  eval(), innerHTML, hardcoded secrets, injection patterns. Runs on all
+  web files including `.vue`, `.svelte`, `.astro`. Runs if installed
+  (`brew install semgrep` or `uv pip install semgrep`), graceful skip
+  if not
+- **jscpd** (duplicates): Existing session-scoped advisory (unchanged)
+
+**CI-recommended (opt-in via config)**:
+
+- **Knip** (dead code): Detects unused exports, dependencies, and
+  devDependencies. Default `knip: false` — too slow for hooks (10-60s
+  session-scoped block). CI catches dead code at merge time. Enable
+  in hooks via `"knip": true` in config.json
+
+**Opt-in type safety (per-file + session-scoped)**:
+
+- **oxlint+tsgolint** (type-aware lint, per-file blocking): 45
+  type-aware rules scoped to avoid overlap with Biome. Per-file
+  execution with 2s hard timeout gate. Catches unsafe assignments,
+  misused promises, unnecessary type assertions, and other common
+  type errors Claude Code would otherwise miss. Config field
+  `oxlint_tsgolint` (default: `false`). See D3
+- **tsgo** (full type checking, session-scoped advisory): Go port of
+  TypeScript compiler (~7-10x faster than tsc). Runs after 3+ TS files
+  modified, scans all modified files. Reports as `[hook:advisory]`.
+  Catches structural type errors that lint rules cannot detect. Config
+  field `tsgo` (default: `false`). See D3
+
+**Not in hooks by default (deferred to IDE + CI)**:
+
+- **Dead code detection** (Knip). Too slow for hooks (10-60s
+  session-scoped). CI catches dead code at merge time. Config field
+  `knip` available as opt-in (default: `false`)
+
+**SFC handling**: `.vue`, `.svelte`, `.astro` files get Semgrep-only
+(Biome doesn't parse SFCs). All other web files get the full Biome +
+Semgrep pipeline.
+
+**Configuration**: Nested TypeScript section in `config.json` with
+per-tool toggles (`enabled`, `js_runtime`, `biome_nursery`,
+`biome_unsafe_autofix`, `oxlint_tsgolint`, `tsgo`, `semgrep`, `knip`). JS runtime
+auto-detection or explicit selection. New tool configs (`biome.json`,
+`.semgrep.yml`, `knip.json`) added to protected files list.
+
+**Architecture**: Same script (`multi_linter.sh`), new case branch
+(`*.ts | *.tsx | *.js | *.jsx | *.mjs | *.cjs | *.mts | *.cts | *.css`)
+dispatching to a named `handle_typescript()`
+function (~150-200 lines). Five satellite functions also modified
+(~50-70 lines): `spawn_fix_subprocess()`, `rerun_phase1()`,
+`rerun_phase2()`, plus new `is_typescript_enabled()` config function.
+Shared model selection patterns (haiku for simple fixes, sonnet for
+semantic/complexity, opus for volume >5). Subprocess delegation
+identical to Python handler. JS runtime auto-detection is cached per
+session (`/tmp/.biome_path_${PPID}`).
+
+**Performance alignment**: Per-edit blocking time is ~0.4-0.6s +
+subprocess without oxlint (includes estimated Biome Scanner overhead
+of +50-200ms when nursery type-aware rules are active), ~0.6-1.4s +
+subprocess with oxlint opt-in (vs Python's ~0.8s + subprocess).
+Advisory tools (Semgrep, tsgo, Knip) are session-scoped (after 3+ TS
+files), not per-edit. Verification phase (`rerun_phase2()`) skips
+advisory tools for TypeScript, re-running only Biome lint + oxlint
+if enabled (~100-400ms). See Performance Budget section for full
+timing comparison.
+
+**Pre-commit**: Two Biome hooks (`biome-format` + `biome-lint`) using
+`language: system` with graceful degradation (exit 0 if Biome not
+installed). Inserted after Python hooks. Semgrep, Knip, and tsc are
+CC-hooks-only (documented in INTENTIONAL EXCLUSIONS). Pre-commit JSON
+validation stays jaq (D6 Biome takeover is CC-hooks only).
+
+**Template structure**: Opt-in TS layer. Python scaffolding unchanged.
+`.gitignore` pre-includes TS patterns. `scripts/init-typescript.sh` creates
+`biome.json`, `package.json`, `tsconfig.json` and flips
+`typescript.enabled` in `config.json`.
+
+**Testing strategy**: Two-tier architecture. Tier 1: 21 unit tests in
+`test_hook.sh --self-test` using `HOOK_SKIP_SUBPROCESS=1` for
+deterministic results (exit codes, output patterns, model selection).
+Tier 2: 3 manual E2E validation commands via `claude -p --debug
+--allowedTools "Read,Edit,Write"` for full-chain verification. Hooks
+fire in pipe mode (confirmed by official docs). Regression gate: run
+`--self-test` (35 total tests) before each commit during implementation.
+
+### 4. Verification
+
+#### Automated Tests (see Q6 for full test suite)
+
+The 21 TypeScript unit tests in `test_hook.sh --self-test` (Q6, Tier 1)
+cover: functional behavior (clean file, violations, extension handling),
+configuration (TS disabled, nursery, JSON takeover), model selection
+(haiku/sonnet/opus), graceful degradation (Biome missing), protected
+config files (biome.json), pre-commit hooks (Biome format/lint,
+graceful skip), oxlint+tsgolint (type-aware violations, disabled
+default, timeout gate), and tsgo (session advisory, disabled default).
+
+The 3 E2E validation commands (Q6, Tier 2) cover the full Claude Code
+-> hook -> subprocess -> verify chain for: violations fixed, TS
+disabled, and Biome not installed.
+
+Run the regression gate (`test_hook.sh --self-test`) before each commit
+during implementation. All 35 tests (14 existing + 21 new TS) must pass.
+
+#### Manual Verification Checks
+
+The following checks require manual validation (timing measurements,
+multi-edit sessions, or tool-specific setup that cannot be reliably
+automated in the test suite):
+
+1. **Performance budget test**: Time `biome check --write` on a single
+   TS file. Verify Phase 1 completes in <200ms (well within 500ms
+   budget). Time `semgrep --config .semgrep.yml` on a single file.
+   Verify it completes in <3s with the local ruleset
+
+2. **Verify scope test**: With `HOOK_DEBUG_MODEL=1`, trigger a TS
+   file edit that produces violations. After subprocess fixes, verify
+   that `rerun_phase2()` only runs Biome lint + oxlint if enabled
+   (not Semgrep or tsgo)
+
+3. **oxlint timeout gate test**: With `oxlint_tsgolint: true`, edit
+   a large TS file (>5000 lines). Verify oxlint completes within 2s
+   or is killed by timeout gate with a warning, not a blocking failure
+
+4. **tsgo session advisory test**: With `tsgo: true`, edit 3+ TS
+   files in a session. Verify tsgo runs on the trigger edit, reports
+   as `[hook:advisory]`, and does not block the edit
+
+5. **Runtime caching test**: Edit two TS files consecutively. Verify
+   that Biome binary path detection runs only on the first edit
+   (check for `/tmp/.biome_path_${PPID}` existence after first edit)
+
+6. **Semgrep session-scoped test**: Edit 3 TS files in a session.
+   Verify Semgrep runs on the 3rd edit, scanning all 3 modified
+   files. Verify it uses `.semgrep.yml` (not `--config auto`)
+
+7. **Scanner overhead measurement**: With `biome_nursery: "warn"`
+   (default) and `oxlint_tsgolint: false` (default), time
+   `biome lint --reporter=json` on a TS file that triggers nursery
+   type-aware rules (e.g., `noFloatingPromises`). Compare against
+   a run with nursery disabled (`biome_nursery: "off"`). The
+   difference is Scanner overhead. Update the Performance Budget
+   table with measured values (estimated +50-200ms in this ADR)
+
+---
+
+## Appendix: Resolved Questions
+
+The following questions were resolved during the clarification interview
+on 2026-02-14. Their resolutions are incorporated into the relevant
+decisions (D1-D17) above. Kept here for historical context and
+alternative-options documentation.
 
 ### ~~Q1: Type Checking Strategy~~ (RESOLVED)
 
-**Resolution**: Skip type checking in hooks. Defer to IDE (real-time) and
-CI (enforcement). See D3 for full rationale. Config field `tsc` defaults
-to `false`. Escape hatch: enable `tsc: true` with tsgo for projects that
-require it.
+**Resolution**: Two-tool opt-in type safety strategy. (1) oxlint+tsgolint
+for per-file blocking (45 type-aware rules, 2s timeout gate), (2) tsgo
+for session-scoped advisory (full type checking after 3+ TS files). Both
+default to `false`. See D3 for full rationale, research findings, and
+four-layer type safety strategy (IDE → hooks fast → hooks complete → CI).
 
 ### ~~Q2: Biome.json Template Contents~~ (RESOLVED)
 
@@ -767,7 +1390,7 @@ directly, like `.ruff.toml`. No dynamic generation.
 
 ```json
 {
-  "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.3.11/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -787,7 +1410,14 @@ directly, like `.ruff.toml`. No dynamic generation.
   "linter": {
     "enabled": true,
     "rules": {
-      "all": true,
+      "recommended": true,
+      "a11y": "error",
+      "complexity": "warn",
+      "correctness": "error",
+      "performance": "warn",
+      "security": "error",
+      "style": "warn",
+      "suspicious": "error",
       "nursery": "warn"
     }
   },
@@ -820,7 +1450,7 @@ directly, like `.ruff.toml`. No dynamic generation.
 | `quoteStyle` | `"double"` | Biome/Prettier default |
 | `trailingCommas` | `"all"` | Reduces git diffs |
 | `semicolons` | `"always"` | Explicit, safer |
-| `rules.all` | `true` | Maximum opinionatedness (like Ruff `select = ["ALL"]`) |
+| `rules.*` groups | All set to `"error"` or `"warn"` | Maximum opinionatedness — all stable groups enabled with appropriate severity. `"all": true` was changed in Biome v2; explicit group enablement is the v2-compatible approach |
 | `rules.nursery` | `"warn"` | D9 default — advisory, non-blocking |
 | `organizeImports` | `"on"` | Auto-sort imports on format |
 | `vcs.useIgnoreFile` | `true` | Respects `.gitignore` patterns |
@@ -853,6 +1483,13 @@ per-project):
 These are left enabled for maximum opinionatedness. Projects that need
 exceptions should use biome.json `overrides` or inline suppressions.
 
+**Known side-effect: `organizeImports` and CSS import order**: The
+`assist.actions.source.organizeImports: "on"` setting runs during
+Phase 1 (`biome check --write`) and may regroup side-effect CSS imports
+(e.g., `import './reset.css'`), changing their cascade order. Projects
+with order-dependent CSS imports should set `"organizeImports": "off"`
+in biome.json or use `// biome-ignore organize-imports` inline.
+
 ### ~~Q3: Semgrep Ruleset~~ (RESOLVED)
 
 **Resolution**: CC hooks use a curated local ruleset (`.semgrep.yml`,
@@ -882,10 +1519,133 @@ execution practical (3-9s total when scanning 3+ modified files).
 - Path traversal (`fs.readFile` with unsanitized paths)
 - JWT misuse (hardcoded secrets, missing verification)
 
-The exact `.semgrep.yml` contents will be defined during implementation,
-drawing from Semgrep's `p/typescript` and `p/security-audit` registry
-rulesets. The local file is version-controlled and protected via the
-PreToolUse hook (D14).
+**Template `.semgrep.yml`** (shipped with init process, version-controlled):
+
+```yaml
+rules:
+  # 1. Code Injection: eval() / new Function()
+  - id: cc-hooks-no-eval
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(...)
+    message: >
+      Avoid eval() and new Function() — they execute arbitrary code from
+      strings, enabling code injection attacks.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-94: Improper Control of Generation of Code"
+
+  # 2. XSS: innerHTML / dangerouslySetInnerHTML
+  - id: cc-hooks-no-inner-html
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $X
+          - pattern: dangerouslySetInnerHTML={{__html: $X}}
+    message: >
+      Setting innerHTML or dangerouslySetInnerHTML with dynamic content
+      enables XSS attacks. Use textContent or a sanitization library.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-79: Cross-site Scripting (XSS)"
+
+  # 3. Hardcoded Secrets: API keys and tokens
+  - id: cc-hooks-no-hardcoded-secret
+    patterns:
+      - pattern: |
+          $VAR = "..."
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i).*(secret|password|api_key|apikey|token|auth).*
+    message: >
+      Possible hardcoded secret in variable assignment. Use environment
+      variables or a secrets manager instead.
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+
+  # 4. SQL Injection: string concatenation in queries
+  - id: cc-hooks-no-sql-concat
+    patterns:
+      - pattern-either:
+          - pattern: $DB.query(`...${$X}...`)
+          - pattern: $DB.query("..." + $X + "...")
+          - pattern: $DB.execute(`...${$X}...`)
+    message: >
+      SQL query built with string concatenation is vulnerable to injection.
+      Use parameterized queries or an ORM.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-89: SQL Injection"
+
+  # 5. Command Injection: child_process with user input
+  - id: cc-hooks-no-command-injection
+    patterns:
+      - pattern-either:
+          - pattern: exec($CMD)
+          - pattern: execSync($CMD)
+          - pattern: child_process.exec($CMD)
+          - pattern: child_process.execSync($CMD)
+    message: >
+      exec()/execSync() spawn a shell and are vulnerable to command
+      injection. Use execFile() or spawn() with argument arrays instead.
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+
+  # 6. Path Traversal: unsanitized file paths
+  - id: cc-hooks-no-path-traversal
+    patterns:
+      - pattern-either:
+          - pattern: fs.readFile($PATH, ...)
+          - pattern: fs.readFileSync($PATH, ...)
+          - pattern: fs.writeFile($PATH, ...)
+          - pattern: fs.writeFileSync($PATH, ...)
+      - metavariable-pattern:
+          metavariable: $PATH
+          patterns:
+            - pattern-not: "..."
+    message: >
+      File operation with dynamic path may allow path traversal. Validate
+      and sanitize file paths before use.
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-22: Path Traversal"
+
+  # 7. JWT Misuse: hardcoded secrets
+  - id: cc-hooks-no-jwt-hardcoded-secret
+    patterns:
+      - pattern-either:
+          - pattern: jwt.sign($DATA, "...", ...)
+          - pattern: jwt.verify($DATA, "...", ...)
+    message: >
+      JWT signed/verified with a hardcoded string secret. Use environment
+      variables or a key management service.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+```
+
+The rules are namespaced with `cc-hooks-` prefix and prioritize low
+false-positive rates for a hook environment (conservative patterns,
+no taint analysis which requires cross-file tracking). The local file
+is version-controlled and protected via the PreToolUse hook (D14).
+
+**Why broad rules are acceptable**: Semgrep runs as advisory-only
+(session-scoped, non-blocking). Its output goes to `[hook:advisory]`
+and does NOT trigger subprocess delegation. This means false positives
+(e.g., `cc-hooks-no-command-injection` flagging legitimate `exec()`
+calls in build scripts) surface awareness without causing automatic
+code changes. This is fundamentally different from Biome rules, which
+ARE blocking and DO trigger subprocess fixes. Broad advisory rules are
+safe; broad blocking rules would not be.
 
 **Original options evaluated**:
 
@@ -947,7 +1707,7 @@ ships SCSS parser support. No Stylelint dependency.
 
 ### ~~Q5: Install and Dependency Documentation~~ (RESOLVED)
 
-**Resolution**: Makefile target (`make init-typescript`) for TypeScript
+**Resolution**: Init script (`scripts/init-typescript.sh`) for TypeScript
 activation. Dependencies documented with all package managers. Manual
 `npm install` step.
 
@@ -956,13 +1716,14 @@ activation. Dependencies documented with all package managers. Manual
 | Tool | Install Method | Required? | Purpose |
 | --- | --- | --- | --- |
 | Biome | `npm i -D @biomejs/biome` | Required | Lint + format (TS/JS/CSS/JSON) |
+| oxlint+tsgolint | `npm i -D oxlint oxlint-tsgolint` | Optional (opt-in) | 45 type-aware lint rules (per-file blocking) |
 | Semgrep | `brew install semgrep` or `pip install semgrep` | Optional (runs if installed) | Security scanning |
 | Knip | `npm i -D knip` | Optional (CI-recommended) | Dead code detection (off in hooks by default) |
-| tsgo | `npm i -g @typescript/native-preview` | Optional | Type checking (escape hatch) |
+| tsgo | `npm i -g @typescript/native-preview` | Optional (opt-in) | Full type checking (session-scoped advisory) |
 | jscpd | `npx jscpd` (no install) | Optional | Duplicate detection (existing) |
 | jaq | `brew install jaq` | Required | JSON parsing (existing) |
 
-**Init process**: `make init-typescript`
+**Init process**: `scripts/init-typescript.sh`
 
 | Step | Action | Existing File Handling |
 | --- | --- | --- |
@@ -981,6 +1742,8 @@ Next steps:
   npm install          (or: pnpm install / bun install)
 
 Optional enhancements:
+  npm i -D oxlint oxlint-tsgolint  (type-aware lint, 45 rules per-file)
+  npm i -g @typescript/native-preview  (full type checking, session advisory)
   brew install semgrep   (security scanning)
   pip install semgrep    (alternative install method)
   npm i -D knip          (dead code detection, CI-recommended)
@@ -990,7 +1753,7 @@ Optional enhancements:
 
 | Choice | Decision | Rationale |
 | --- | --- | --- |
-| Makefile target | `make init-typescript` | Discoverable, self-documenting, consistent with Make conventions |
+| Init script | `scripts/init-typescript.sh` | No Makefile dependency, consistent with bash-based hook system, won't conflict with project Makefiles |
 | Manual `npm install` | Not run automatically | User controls when dependencies download; avoids surprises |
 | Existing `package.json` | Merge devDependencies via `jaq` | Preserves existing deps and formatting |
 | Idempotent | Skip existing config files | Running twice is safe; won't overwrite customized configs |
@@ -1013,7 +1776,7 @@ Optional enhancements:
 {
   "private": true,
   "devDependencies": {
-    "@biomejs/biome": "^2.0.0"
+    "@biomejs/biome": "^2.3.0"
   }
 }
 ```
@@ -1078,6 +1841,11 @@ tests skip gracefully if Biome is missing, matching the hadolint pattern).
 | 14 | Pre-commit: graceful skip | Biome not in PATH | Exit 0 (skip, not fail) | N/A |
 | 15 | CSS: clean file | Valid `.css` with correct properties | Exit 0 | `HOOK_SKIP_SUBPROCESS=1` |
 | 16 | CSS: violations | `.css` with duplicate properties | Exit 2 (violations reported) | `HOOK_SKIP_SUBPROCESS=1` |
+| 17 | oxlint: type-aware violation | `const x: any = 1; fn(x)` (unsafe argument) | Exit 2 (oxlint reports) | `HOOK_SKIP_SUBPROCESS=1` + `oxlint_tsgolint: true` |
+| 18 | oxlint: disabled (default) | Same file, `oxlint_tsgolint: false` | Exit 0 (Biome only) | `HOOK_SKIP_SUBPROCESS=1` |
+| 19 | oxlint: timeout gate | Large file triggering >2s | Exit 0 + warning (timeout) | `HOOK_SKIP_SUBPROCESS=1` + `oxlint_tsgolint: true` |
+| 20 | tsgo: session advisory | 4th TS file modified, type error | `[hook:advisory]` with tsgo output | `HOOK_SKIP_SUBPROCESS=1` + `tsgo: true` |
+| 21 | tsgo: disabled (default) | 4th TS file, `tsgo: false` | No tsgo output | `HOOK_SKIP_SUBPROCESS=1` |
 
 **Test helpers**: Uses existing `test_temp_file()`, `test_existing_file()`,
 `test_output_format()`, and `test_model_selection()` helpers from
@@ -1088,6 +1856,10 @@ Python and Dockerfile tests.
 found, TS-specific tests skip with a warning (not a failure), matching the
 existing graceful degradation pattern. Semgrep and Knip tests are skipped
 if those tools are not installed (advisory tools are optional).
+oxlint+tsgolint tests (17-19) require oxlint and oxlint-tsgolint
+installed and `oxlint_tsgolint: true` in config — skip with warning if
+not available. tsgo tests (20-21) require @typescript/native-preview
+installed and `tsgo: true` — skip with warning if not available.
 
 **Tier 2: E2E Validation** (manual, non-deterministic, API cost)
 
@@ -1139,7 +1911,7 @@ commit:
 
 # 2. After adding TS tests, run expanded suite
 .claude/hooks/test_hook.sh --self-test
-# Expected: 14 existing + 16 new TS tests = 30 total, all pass
+# Expected: 14 existing + 21 new TS tests = 35 total, all pass
 
 # 3. Final validation (once, before PR)
 # Run the 3 E2E commands above
@@ -1158,6 +1930,8 @@ regression gate provides confidence.
 | Extend test_hook.sh or new file? | Extend `test_hook.sh` | Single test suite, consistent patterns, shared helpers |
 | Test fixtures | Generate temp files | Consistent with existing tests (all use `${temp_dir}`) |
 | Semgrep without Semgrep? | Skip with warning | Optional tool; graceful degradation pattern |
+| oxlint without oxlint? | Skip with warning | Optional tool; same graceful degradation pattern |
+| tsgo without tsgo? | Skip with warning | Optional tool; same graceful degradation pattern |
 | HOOK_SKIP_SUBPROCESS=1? | Yes, for all unit tests | Deterministic exit codes; subprocess tested via E2E |
 
 ### ~~Q7: Linear Document Corrections~~ (RESOLVED)
@@ -1180,242 +1954,41 @@ type-aware coverage claims:
 4. **Sources section**: Added Biome v2 announcement, type inference blog,
    and 2026 roadmap links
 
-## Consequences
-
-### Positive
-
-- TypeScript files get the same aggressive lint-on-edit treatment as Python
-- Single-binary Biome matches Ruff's developer experience
-- Security scanning (Semgrep) provides immediate feedback on vulnerabilities
-- Dead code detection (Knip) prevents unused export accumulation
-- Configurable strictness allows teams to tune opinionatedness
-- Protected config files prevent accidental rule weakening
-- Pre-commit Biome hooks provide commit-time enforcement matching Python
-- Opt-in TS layer keeps the template clean for Python-only users
-- CSS files get formatting + linting via the same Biome pipeline (31
-  stable rules, no extra dependency)
-- Graceful degradation in pre-commit (skip when Biome not installed)
-  eliminates manual YAML commenting/uncommenting
-
-### Negative
-
-- More dependencies to install (Biome required; Semgrep, Knip optional)
-- Increased hook execution time for session-scoped tools (Semgrep 3-9s
-  if installed) on the trigger edit (3rd TS file modified). Knip
-  (10-60s) is CI-recommended and off by default in hooks
-- Vue/Svelte/Astro files get limited coverage (Semgrep only, no Biome)
-- Nursery rules may cause unexpected advisory noise
-- config.json structure becomes asymmetric (TS nested, others flat)
-- SCSS/Sass/Less files have no hook coverage until Biome ships SCSS
-  parser support
-- CSS Modules may trigger false positives (`:global()` pseudo-class
-  flagged as unknown)
-- No type checking in hooks means type errors only caught by IDE and CI
-- Per-edit blocking time is actually lower than Python (~0.4s vs ~0.8s)
-  because `biome check --write` is a single combined command
-- SFC files have zero pre-commit coverage (Biome can't parse, Semgrep
-  is CC-hooks-only)
-- Pre-commit Biome wrapper uses `command -v` which may behave differently
-  in some shell environments
-
-### Risks
-
-- Biome's JSON reporter format is documented as "experimental" - may change
-- Semgrep's `--config auto` ruleset may add noisy rules over time
-- Knip defaults to CI-only (`knip: false`). Users who opt-in to
-  hooks-based Knip face session-scoped scanning that may miss dead
-  code introduced in the first 2 files
-- Biome's ~8 type-aware rules (out of 15-16 Project domain rules) provide
-  limited type safety coverage compared to the ~86 rules in typescript-eslint
-- Init process for TS activation may conflict with existing `package.json`
-  in projects that already have one
-
-## Clarification Summary
-
-### 1. Problem
-
-The cc-hooks-portable-template provides aggressive, automated code quality
-enforcement for Python and other languages via PostToolUse hooks, but has
-no TypeScript/JavaScript coverage. As the template is intended for
-projects that include TypeScript codebases, this gap means TypeScript
-files bypass the Boy Scout Rule (edit a file, own all its violations)
-that the hook system enforces for every other supported language.
-
-### 2. Root Cause
-
-The TypeScript linting ecosystem has been fragmented and fast-moving,
-with no clear "Ruff equivalent" until recently. The Python hook benefits
-from Ruff's single-binary, opinionated, Rust-based design that combines
-formatting, linting, and auto-fixing in one tool with native JSON output.
-TypeScript lacked a tool with equivalent philosophy, performance, and
-integration characteristics suitable for a synchronous PostToolUse hook
-that must complete within a strict performance budget.
-
-Additionally, TypeScript type checking is fundamentally project-wide (it
-requires the full module graph), making it incompatible with the per-file
-hook execution model. This created uncertainty about how to achieve
-equivalent depth without the `ty` (type checker) equivalent that the
-Python stack enjoys.
-
-### 3. Solution
-
-Expand the existing `multi_linter.sh` hook with a TypeScript handler
-using this tool stack:
-
-**Core (per-file, blocking)**:
-
-- **Biome** (format + lint): Single Rust binary, `biome check --write`
-  for Phase 1, `biome lint --reporter=json` for Phase 2. All stable
-  rules enabled (`{ "all": true }`), nursery configurable
-  (`off`/`warn`/`error`). Two-tier auto-fix configurable (safe-only
-  default, unsafe optional). Handles `.ts`, `.tsx`, `.js`, `.jsx`,
-  `.mjs`, `.cjs` files and takes over JSON formatting when enabled
-
-**Supplemental (session-scoped advisory)**:
-
-- **Semgrep** (security, optional enhancement): Session-scoped advisory
-  scanning (after 3+ TS files, scans all modified files) via
-  `semgrep --json --config .semgrep.yml`. Uses curated local ruleset
-  (5-10 rules, 1-3s/file) instead of `--config auto` (5-15s). Catches
-  eval(), innerHTML, hardcoded secrets, injection patterns. Runs on all
-  web files including `.vue`, `.svelte`, `.astro`. Runs if installed
-  (`brew install semgrep` or `uv pip install semgrep`), graceful skip
-  if not
-- **jscpd** (duplicates): Existing session-scoped advisory (unchanged)
-
-**CI-recommended (opt-in via config)**:
-
-- **Knip** (dead code): Detects unused exports, dependencies, and
-  devDependencies. Default `knip: false` — too slow for hooks (10-60s
-  session-scoped block). CI catches dead code at merge time. Enable
-  in hooks via `"knip": true` in config.json
-
-**Not in hooks by default (deferred to IDE + CI)**:
-
-- **Type checking** (`tsc --noEmit` or `tsgo`). Too slow for per-edit
-  hooks (2-5s project-wide). IDE provides real-time feedback, CI enforces
-  at merge time. Config field `tsc` available as escape hatch (default:
-  `false`). See D3
-- **Dead code detection** (Knip). Too slow for hooks (10-60s
-  session-scoped). CI catches dead code at merge time. Config field
-  `knip` available as opt-in (default: `false`)
-
-**SFC handling**: `.vue`, `.svelte`, `.astro` files get Semgrep-only
-(Biome doesn't parse SFCs). All other web files get the full Biome +
-Semgrep pipeline.
-
-**Configuration**: Nested TypeScript section in `config.json` with
-per-tool toggles (`enabled`, `js_runtime`, `biome_nursery`,
-`biome_unsafe_autofix`, `tsc`, `semgrep`, `knip`). JS runtime
-auto-detection or explicit selection. New tool configs (`biome.json`,
-`.semgrep.yml`, `knip.json`) added to protected files list.
-
-**Architecture**: Same script (`multi_linter.sh`), new case branch
-(`*.ts | *.tsx | ...`) dispatching to a named `handle_typescript()`
-function (~150-200 lines). Five satellite functions also modified
-(~50-70 lines): `spawn_fix_subprocess()`, `rerun_phase1()`,
-`rerun_phase2()`, plus new `is_typescript_enabled()` config function.
-Shared model selection patterns (haiku for simple fixes, sonnet for
-semantic/complexity, opus for volume >5). Subprocess delegation
-identical to Python handler. JS runtime auto-detection is cached per
-session (`/tmp/.biome_path_${PPID}`).
-
-**Performance alignment**: Per-edit blocking time is ~0.4s + subprocess
-(vs Python's ~0.8s + subprocess). Advisory tools (Semgrep, Knip) are
-session-scoped (after 3+ TS files), not per-edit. Verification phase
-(`rerun_phase2()`) skips advisory tools for TypeScript, re-running
-only Biome lint (~100ms). See Performance Budget section for full
-timing comparison.
-
-**Pre-commit**: Two Biome hooks (`biome-format` + `biome-lint`) using
-`language: system` with graceful degradation (exit 0 if Biome not
-installed). Inserted after Python hooks. Semgrep, Knip, and tsc are
-CC-hooks-only (documented in INTENTIONAL EXCLUSIONS). Pre-commit JSON
-validation stays jaq (D6 Biome takeover is CC-hooks only).
-
-**Template structure**: Opt-in TS layer. Python scaffolding unchanged.
-`.gitignore` pre-includes TS patterns. `make init-typescript` creates
-`biome.json`, `package.json`, `tsconfig.json` and flips
-`typescript.enabled` in `config.json`.
-
-**Testing strategy**: Two-tier architecture. Tier 1: 16 unit tests in
-`test_hook.sh --self-test` using `HOOK_SKIP_SUBPROCESS=1` for
-deterministic results (exit codes, output patterns, model selection).
-Tier 2: 3 manual E2E validation commands via `claude -p --debug
---allowedTools "Read,Edit,Write"` for full-chain verification. Hooks
-fire in pipe mode (confirmed by official docs). Regression gate: run
-`--self-test` (30 total tests) before each commit during implementation.
-
-### 4. Verification
-
-#### Automated Tests (see Q6 for full test suite)
-
-The 16 TypeScript unit tests in `test_hook.sh --self-test` (Q6, Tier 1)
-cover: functional behavior (clean file, violations, extension handling),
-configuration (TS disabled, nursery, JSON takeover), model selection
-(haiku/sonnet/opus), graceful degradation (Biome missing), protected
-config files (biome.json), and pre-commit hooks (Biome format/lint,
-graceful skip).
-
-The 3 E2E validation commands (Q6, Tier 2) cover the full Claude Code
--> hook -> subprocess -> verify chain for: violations fixed, TS
-disabled, and Biome not installed.
-
-Run the regression gate (`test_hook.sh --self-test`) before each commit
-during implementation. All 30 tests (14 existing + 16 new TS) must pass.
-
-#### Manual Verification Checks
-
-The following checks require manual validation (timing measurements,
-multi-edit sessions, or tool-specific setup that cannot be reliably
-automated in the test suite):
-
-1. **Performance budget test**: Time `biome check --write` on a single
-   TS file. Verify Phase 1 completes in <200ms (well within 500ms
-   budget). Time `semgrep --config .semgrep.yml` on a single file.
-   Verify it completes in <3s with the local ruleset
-
-2. **Verify scope test**: With `HOOK_DEBUG_MODEL=1`, trigger a TS
-   file edit that produces violations. After subprocess fixes, verify
-   that `rerun_phase2()` only runs Biome lint (not Semgrep)
-
-3. **Runtime caching test**: Edit two TS files consecutively. Verify
-   that Biome binary path detection runs only on the first edit
-   (check for `/tmp/.biome_path_${PPID}` existence after first edit)
-
-4. **Semgrep session-scoped test**: Edit 3 TS files in a session.
-   Verify Semgrep runs on the 3rd edit, scanning all 3 modified
-   files. Verify it uses `.semgrep.yml` (not `--config auto`)
-
 ---
 
 ## References
 
-- [Biome Linter Overview (official rule count)](https://biomejs.dev/linter/)
+- [Biome Linter Overview (official rule count: 436)](https://biomejs.dev/linter/)
 - [Biome JavaScript Rules (nursery count)](https://biomejs.dev/linter/javascript/rules/)
 - [Biome v2 Announcement (75% noFloatingPromises figure)](https://biomejs.dev/blog/biome-v2/)
-- [Biome v2.3 Release (Vue/Svelte/Astro SFC support)](https://biomejs.dev/blog/biome-v2-3/)
+- [Biome v2.1 Announcement](https://biomejs.dev/uk/blog/biome-v2-1)
+- [Biome v2.3 Announcement (Vue/Svelte/Astro support)](https://biomejs.dev/blog/biome-v2-3/)
 - [Biome 2026 Roadmap](https://biomejs.dev/blog/roadmap-2026/)
 - [Biome useExhaustiveDependencies Rule](https://biomejs.dev/linter/rules/use-exhaustive-dependencies/)
 - [Biome Linter Domains Documentation](https://biomejs.dev/linter/domains/)
 - [Biome useRegexpExec Rule Documentation](https://biomejs.dev/linter/rules/use-regexp-exec/)
 - [Biome CSS Rules](https://biomejs.dev/linter/css/rules/)
+- [Biome CSS Rules Sources (Stylelint ported rules)](https://biomejs.dev/linter/css/sources)
 - [Biome Type-Aware Linter Umbrella Issue #3187](https://github.com/biomejs/biome/issues/3187)
 - [Biome Stylelint Rules Tracking Issue #2511](https://github.com/biomejs/biome/issues/2511)
 - [Biome Differences with Prettier](https://biomejs.dev/formatter/differences-with-prettier/)
 - [Biome Official Pre-commit Hooks](https://github.com/biomejs/pre-commit)
 - [Biome Benchmark Suite](https://github.com/biomejs/biome/blob/main/benchmark/README.md)
 - [Biome Reporters Documentation](https://biomejs.dev/reference/reporters/)
-- [Biome Configuration Reference (quoteStyle default)](https://biomejs.dev/reference/configuration/)
+- [Biome Configuration Reference](https://biomejs.dev/reference/configuration/)
 - [typescript-eslint Rules Overview](https://typescript-eslint.io/rules/)
 - [Deno Lint Rules List](https://docs.deno.com/lint/)
-- [TypeScript Native Port Announcement (10x speed)](https://devblogs.microsoft.com/typescript/typescript-native-port/)
+- [TypeScript Native Port Announcement](https://devblogs.microsoft.com/typescript/typescript-native-port/)
 - [TypeScript Native Preview (tsgo) npm package](https://www.npmjs.com/package/@typescript/native-preview)
+- [TypeScript 7.0 Guide (tsgo test parity)](https://picode.bunnode.com/blog/typescript-7-ultimate-guide)
 - [Progress on TypeScript 7 (December 2025)](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/)
 - [Oxfmt Alpha Announcement (Dec 2025)](https://oxc.rs/blog/2025-12-01-oxfmt-alpha.html)
-- [Oxlint v1.0 Stable Release](https://oxc.rs/blog/2025-06-10-oxlint-stable.html)
-- [Oxlint Benchmark (50-100x claim)](https://github.com/oxc-project/bench-linter)
-- [Rslint GitHub Repository (web-infra-dev)](https://github.com/web-infra-dev/rslint)
+- [Oxlint v1.0 Stable Announcement (VoidZero)](https://voidzero.dev/posts/announcing-oxlint-1-stable)
+- [Oxlint Type-Aware Linting Announcement (VoidZero)](https://voidzero.dev/posts/announcing-oxlint-type-aware-linting)
+- [Oxlint Benchmark Repository](https://github.com/oxc-project/bench-linter)
+- [Oxlint Type-Aware Linting Rules](https://oxc.rs/docs/guide/usage/linter/rules)
+- [tsgolint GitHub Repository](https://github.com/oxc-project/tsgolint)
+- [Rslint GitHub Repository](https://github.com/web-infra-dev/rslint)
 - [ts-prune README (maintenance mode)](https://github.com/nadeesha/ts-prune)
 - [Semgrep Pre-commit Documentation](https://semgrep.dev/docs/extensions/pre-commit)
 - [Semgrep Performance Issue #5257](https://github.com/semgrep/semgrep/issues/5257)
@@ -1429,3 +2002,10 @@ automated in the test suite):
 - [Claude Code Hooks Guide](https://code.claude.com/docs/en/hooks-guide)
 - [bats-core (Bash Automated Testing System)](https://github.com/bats-core/bats-core)
 - [bats-mock (Stubbing library for BATS)](https://github.com/jasonkarns/bats-mock)
+- [Biome v2.3.15 Release (noNestedPromises)](https://github.com/biomejs/biome/releases)
+- [Oxlint v1.0 InfoQ Coverage (520+ rules)](https://www.infoq.com/news/2025/08/oxlint-v1-released/)
+- [Oxlint Type-Aware Linting (Cloudflare investigation, 45 of 59 rules)](https://github.com/cloudflare/agents/issues/862)
+- [tsgolint v0.12.0 Release Notes](https://newreleases.io/project/github/oxc-project/tsgolint/release/v0.12.0)
+- [Deno 2.2 Release Blog (123 built-in lint rules)](https://deno.com/blog/v2.2)
+- [Rslint Announcement (Socket.dev)](https://socket.dev/blog/rspack-introduces-rslint-a-typescript-first-linter-written-in-go)
+- [Effective TypeScript - Knip recommendation](https://effectivetypescript.com/2023/07/29/knip/)

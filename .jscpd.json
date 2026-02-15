@@ -6,7 +6,7 @@
   "reporters": ["json", "console"],
   "output": "./reports/jscpd",
   "mode": "mild",
-  "format": ["python", "bash", "yaml"],
+  "format": ["python", "bash", "yaml", "typescript", "javascript", "tsx", "jsx", "css"],
   "absolute": false,
   "gitignore": true,
   "ignore": [

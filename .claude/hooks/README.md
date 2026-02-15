@@ -145,6 +145,52 @@ Edit/Write on *.py
 +--------------------------------------------------------------+
 ```
 
+### TypeScript/JS/CSS File Flow Detail
+
+```text
+Edit/Write on *.ts/*.tsx/*.js/*.jsx/*.css
+       |
+       v
++--------------------------------------------------------------+
+|  PHASE 1: Auto-Format (silent)                               |
+|  ------------------------------------------------------------|
+|  1. biome check --write (format + safe lint fixes)           |
+|     Optional: --unsafe (biome_unsafe_autofix config)         |
+|                                                              |
+|  Uses detect_biome() for JS runtime auto-detection           |
++--------------------------------------------------------------+
+       |
+       v
++--------------------------------------------------------------+
+|  PHASE 2: Collect Violations (JSON)                          |
+|  ------------------------------------------------------------|
+|  2a. biome lint --reporter=json (blocking)                   |
+|  2b. Nursery advisory count (biome_nursery config)           |
+|  2c. Semgrep session-scoped (after 3+ files, advisory)       |
+|  2d. jscpd session-scoped (after 3+ files, advisory)         |
++--------------------------------------------------------------+
+       |
+       v
++--------------------------------------------------------------+
+|  PHASE 3: Delegate + Verify                                  |
+|  ------------------------------------------------------------|
+|  1. Spawn claude -p subprocess with violations JSON          |
+|  2. Subprocess uses Edit to fix each violation               |
+|  3. Re-run Phase 1 (biome check --write)                     |
+|  4. Re-run Phase 2 to count remaining violations             |
+|  5. Exit 0 if fixed, Exit 2 if violations remain            |
++--------------------------------------------------------------+
+```
+
+**SFC Handling** (`.vue`, `.svelte`, `.astro`): These Single-File Component
+formats are not fully supported by Biome. They receive Semgrep-only coverage
+with a one-time warning per extension per session.
+
+**Nursery Rules**: Biome nursery rules are experimental and configurable via
+`biome_nursery` in config.json: `"off"` (skip), `"warn"` (advisory count),
+or `"error"` (blocking). The hook validates that config.json and biome.json
+nursery settings are in sync.
+
 ## Message Styling
 
 Hook messages use prefixed format for severity classification:
@@ -252,6 +298,20 @@ VIOLATIONS:
   {"line": 1, "column": 1, "code": "DL3007", "message": "Using latest is prone to errors.", "linter": "hadolint"},
   {"line": 1, "column": 1, "code": "DL3049", "message": "Label `maintainer` is missing.", "linter": "hadolint"}
 ]
+```
+
+**For TypeScript/JS/CSS files:**
+
+```text
+VIOLATIONS:
+[
+  {"line": 5, "column": 7, "code": "lint/correctness/noUnusedVariables", "message": "This variable is unused.", "linter": "biome"},
+  {"line": 12, "column": 15, "code": "lint/suspicious/noDoubleEquals", "message": "Use === instead of ==.", "linter": "biome"}
+]
+
+RULES:
+...
+3. After fixing, run the formatter: biome format --write './path/to/file.ts'
 ```
 
 **Note:** `format_cmd` is empty for YAML and Dockerfile (no auto-formatter available).
@@ -544,7 +604,8 @@ MAIN AGENT                          HOOK                              SUBPROCESS
 | --- | --- | --- |
 | Python | `ruff format` + `--fix` | Ruff+ty+pydantic+vulture+bandit*** |
 | Shell | `shfmt -w` | ShellCheck semantic |
-| JSON | `jaq '.'` pretty-print* | Syntax errors |
+| TS/JS/CSS | `biome check --write` | Biome lint+nursery+Semgrep+jscpd** |
+| JSON | `jaq '.'` or `biome format`* | Syntax errors |
 | TOML | `taplo fmt` | Syntax errors |
 | Markdown | `markdownlint --no-globs --fix` | Unfixable rules |
 | YAML | (none) | All yamllint issues |
@@ -552,6 +613,13 @@ MAIN AGENT                          HOOK                              SUBPROCESS
 
 **Phase 3** applies to all file types: collected violations are passed to the
 subprocess for fixing, then verified.
+
+**\*\* Semgrep and jscpd run in advisory/session-scoped mode** for TS/JS/CSS
+files (separate session tracking from Python). Semgrep requires `.semgrep.yml`
+in the project root and runs after 3+ TS files modified.
+
+**\* JSON formatting** uses Biome when TypeScript is enabled and Biome is
+available (D6), falling back to jaq pretty-print otherwise.
 
 **Note on Markdown --no-globs**: The hook uses `--no-globs` to disable config
 globs from `.markdownlint-cli2.jsonc`. Without this flag, markdownlint-cli2
@@ -648,14 +716,12 @@ claude --debug "hooks" --verbose
 
 ### Self-Test Suite
 
-The `--self-test` flag runs 14 automated tests covering:
+The `--self-test` flag runs automated tests covering:
 
 **Dockerfile patterns**:
 
-- Project Dockerfile (existing file, expect pass)
 - `*.dockerfile` extension (valid content, expect pass)
 - `*.dockerfile` extension (missing labels, expect fail)
-- Subdirectory Dockerfile (existing file, expect pass)
 
 **Other file types**:
 
@@ -671,9 +737,26 @@ The `--self-test` flag runs 14 automated tests covering:
 - Simple violation (F841) -> haiku
 - Complexity violation (C901) -> sonnet
 - Many violations (>5) -> opus
+- Docstring violation (D103) -> sonnet
 
-Tests use temp files for content creation and read-only checks for existing
-project files to avoid accidental modifications.
+**TypeScript tests** (gated on Biome availability):
+
+- Clean TS file -> exit 0
+- TS unused variable -> exit 2
+- JS clean file -> exit 0
+- JSX a11y violation -> exit 2
+- TS disabled -> exit 0 (skip)
+- CSS clean -> exit 0
+- CSS violation -> exit 2
+- TS violations output contains `biome`
+- Protected biome.json -> block
+- TS simple -> haiku model
+- TS >5 violations -> opus model
+- JSON via Biome (D6) -> exit 0
+- Biome not installed -> exit 0 (fallback)
+
+Tests use temp files for content creation and `CLAUDE_PROJECT_DIR` override
+for TypeScript-enabled config isolation.
 
 ### Log location
 
@@ -776,15 +859,20 @@ If the file is missing, all features are enabled with sensible defaults.
 ### Configuration Options
 
 | Key | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `languages.<type>` | boolean | true | Enable/disable linting per language |
-| `protected_files` | string[] | all 10 configs | Files protected from modification |
-| `exclusions` | string[] | tests/,docs/,... | Paths excluded from security linters |
-| `phases.auto_format` | boolean | true | Enable/disable Phase 1 auto-formatting |
-| `phases.subprocess_delegation` | boolean | true | Enable/disable Phase 3 subprocess |
-| `subprocess.timeout` | number | 300 | Subprocess timeout in seconds |
-| `subprocess.model_selection.*` | string/number | varies | Model selection patterns |
-| `jscpd.*` | varies | varies | Duplicate detection settings |
+| --- | ---- | ------- | ------- |
+| `languages.<type>` | bool | true | Per-language toggle |
+| `languages.typescript` | object | — | TS/JS/CSS config |
+| `…typescript.enabled` | bool | false | Enable TS/JS/CSS |
+| `…typescript.js_runtime` | string | "auto" | auto/node/bun/pnpm |
+| `…typescript.biome_nursery` | string | "warn" | off/warn/error |
+| `…typescript.semgrep` | bool | true | Semgrep session scan |
+| `protected_files` | str[] | 14 configs | Protected from edits |
+| `exclusions` | str[] | tests/,… | Security lint exclusions |
+| `phases.auto_format` | bool | true | Phase 1 auto-format |
+| `phases.subprocess_delegation` | bool | true | Phase 3 subprocess |
+| `subprocess.timeout` | number | 300 | Timeout (seconds) |
+| `subprocess.model_selection.*` | varies | varies | Model routing patterns |
+| `jscpd.*` | varies | varies | Duplicate detection |
 
 ### Example: Disable Markdown Linting
 
@@ -1018,6 +1106,8 @@ Prompt hooks support an optional `model` field:
 - `taplo` - TOML formatting and linting
 - `markdownlint-cli2` - Markdown linting
 - `jscpd` - Duplicate code detection (via npx, no install needed)
+- `biome` - TypeScript/JS/CSS formatting and linting (via npm/npx)
+- `semgrep` - Security scanning for TS/JS (session-scoped, advisory)
 
 **Tool Invocation Pattern:** The hook uses `uv run` to invoke project
 dependencies (ty, pydantic), leveraging the project's virtual
@@ -1226,6 +1316,8 @@ location.
 | taplo | `taplo.toml` |
 | markdownlint | `.markdownlint.jsonc`, `.markdownlint-cli2.jsonc` |
 | jscpd | `.jscpd.json` (5% threshold) |
+| Biome | `biome.json` (TS/JS/CSS formatting + linting) |
+| Semgrep | `.semgrep.yml` (security rules for TS/JS) |
 
 **Note on Taplo:** Auto-formatting is now applied via `taplo fmt`. Only syntax
 errors that cannot be auto-fixed are reported. See `taplo.toml` for config.

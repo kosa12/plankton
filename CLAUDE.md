@@ -23,6 +23,10 @@ you inherited. Fixing them is part of the edit, not a separate task.
 
 - `.ruff.toml` - Python linting (ruff)
 - `ty.toml` - Python type checking (ty)
+- `biome.json` - Biome linter/formatter (TypeScript/JS/CSS)
+- `.oxlintrc.json` - oxlint configuration
+- `.semgrep.yml` - Semgrep security rules
+- `knip.json` - Knip dead code detection
 - `.flake8` - Pydantic model linting rules
 - `.yamllint` - YAML linting rules
 - `.shellcheckrc` - Shell script linting
