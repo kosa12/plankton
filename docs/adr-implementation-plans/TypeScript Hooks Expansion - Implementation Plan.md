@@ -2,7 +2,7 @@
 
 ## Context
 
-The cc-hooks-portable-template provides automated code quality enforcement
+The plankton provides automated code quality enforcement
 via a three-phase PostToolUse hook architecture (auto-format, collect JSON
 violations, delegate to subprocess + verify). It currently supports 7
 languages (Python, Shell, YAML, JSON, TOML, Dockerfile, Markdown) across

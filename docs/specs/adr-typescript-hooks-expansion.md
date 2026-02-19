@@ -9,7 +9,7 @@
 
 ## Context and Problem Statement
 
-The cc-hooks-portable-template currently provides automated code quality
+The plankton currently provides automated code quality
 enforcement for Python, Shell, JSON, TOML, Markdown, YAML, and Dockerfile
 via a three-phase PostToolUse hook architecture (auto-format, collect JSON
 violations, delegate to subprocess + verify). The goal is to expand this
@@ -1177,7 +1177,7 @@ recommendation (Effective TypeScript).
 
 ### 1. Problem
 
-The cc-hooks-portable-template provides aggressive, automated code quality
+The plankton provides aggressive, automated code quality
 enforcement for Python and other languages via PostToolUse hooks, but has
 no TypeScript/JavaScript coverage. As the template is intended for
 projects that include TypeScript codebases, this gap means TypeScript
