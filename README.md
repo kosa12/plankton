@@ -6,6 +6,11 @@ A ready-to-use template for real-time, hook-based code quality enforcement
 in Claude Code. Provides automated linting, formatting, and code quality
 checks that run in real time during Claude Code sessions.
 
+> [!CAUTION]
+> **Plankton is a research project. If your name is not Alex Fazio then do not use.**
+>
+> This software is experimental, unstable, and under active development. APIs will change without notice. Features may be incomplete or broken. There is no support, no documentation guarantees, and no warranty of any kind. Use at your own risk.
+
 ## Quick Start
 
 1. **Use this template** to create a new repository
