@@ -286,7 +286,7 @@ Disable warnings by setting `"grep": false` and `"jq": false` in the
 - [ ] Implement warn path (approve + stderr) in chosen script
 - [ ] Add `tool_preferences` section to config.json
 - [ ] Add test cases to test_hook.sh
-- [ ] Update README.md with warn-mode documentation
+- [ ] Update docs/REFERENCE.md with warn-mode documentation
 
 ---
 

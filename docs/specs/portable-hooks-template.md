@@ -40,7 +40,7 @@ cc-hooks-template/
 │   │   ├── stop_config_guardian.sh   # Stop hook (config guardian)
 │   │   ├── approve_configs.sh        # Helper (guard file creation)
 │   │   ├── test_hook.sh             # Debug/self-test utility
-│   │   └── README.md                # Hook system documentation
+│   │   └── REFERENCE.md             # Hook system documentation
 │   └── settings.json                # Committed hook configuration
 ├── .github/
 │   └── workflows/
@@ -450,7 +450,7 @@ Fix the code, not the rules.
 - **PreToolUse**: Blocks modifications to linter config files and hook scripts
 - **Stop**: Checks for config file modifications at session end
 
-See `.claude/hooks/README.md` for detailed hook documentation.
+See `docs/REFERENCE.md` for detailed hook documentation.
 ```
 
 **Note**: This is deliberately minimal. No project architecture, no commands,
@@ -866,7 +866,7 @@ Comprehensive documentation covering:
    (hooks, linter configs, project skeleton, CI)
 
 3. **Hook System** - Overview of 3-phase architecture, link to
-   hooks/README.md for full details
+   docs/REFERENCE.md for full details
 
 4. **Configuration** - How to edit `config.json`:
    - Enabling/disabling languages
@@ -955,7 +955,7 @@ Comprehensive documentation covering:
     - `jaq` not found: `brew install jaq`
     - `timeout` not found on macOS: `brew install coreutils`
 
-**Step 7.2: Update `.claude/hooks/README.md`**
+**Step 7.2: Update `docs/REFERENCE.md`**
 
 Copy from Incide with these changes:
 

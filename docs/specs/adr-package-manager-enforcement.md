@@ -1235,8 +1235,8 @@ Three methods for disabling enforcement, ordered by granularity:
 - [ ] Register new PreToolUse entry in `.claude/settings.json`
   (Bash matcher)
 - [ ] Add self-test cases to `.claude/hooks/test_hook.sh`
-- [ ] Update `.claude/hooks/README.md` with new hook documentation
-- [ ] Add `[hook:block]` to README.md severity table (new prefix for
+- [ ] Update `docs/REFERENCE.md` with new hook documentation
+- [ ] Add `[hook:block]` to docs/REFERENCE.md severity table (new prefix for
   PreToolUse blocks, extending existing `[hook:error/warning/advisory]`)
 - [ ] Create prerequisites check script (`test_hook.sh --check-deps` or
   standalone `check-prerequisites.sh`) that verifies jaq, uv, bun, and

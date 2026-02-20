@@ -2,16 +2,41 @@
 
 ![Plankton mascot](assets/plankton-cover.png)
 
-A ready-to-use template for real-time, hook-based code quality enforcement
-in Claude Code. Provides automated linting, formatting, and code quality
-checks that run in real time during Claude Code sessions.
+Real-time code quality enforcement for AI coding agents, built on Claude Code hooks.
+
+AI coding agents write fast but they don't follow your rules. Formatting
+drifts, naming conventions get ignored, dead code piles up as agents iterate
+and refactor, and stylistic choices you actually care about (quote style,
+import ordering, docstring format, complexity thresholds) get quietly
+overridden on every edit. You end up in this endless loop of copy-pasting
+pre-commit errors back into the agent, watching it fix half of them,
+committing again, getting more errors. It's maddening. And the worst part:
+agents will happily modify your linter configs to make violations disappear
+instead of fixing the code. The rules get weaker and nobody notices.
+
+Plankton enforces your standards programmatically at write-time, before commits and code review. The agent is
+blocked from proceeding until its output passes your checks. A three-phase
+system auto-formats first (fixing ~40-50% of issues silently), collects
+remaining violations as structured JSON via 20+ fast Rust-based linters, then
+delegates what's left to dedicated Claude instances that reason about each
+violation and produce targeted repairs. Model routing sends simple fixes to
+fast models and complex refactoring to capable ones, right-sizing intelligence
+to problem complexity so tokens aren't wasted. Covers Python, TypeScript/
+JS/CSS, Shell, YAML, Markdown, Dockerfile, TOML, and JSON — 8 languages, each
+with its own enforcement pipeline.
+
+Agentic coding created a [new programmable
+layer](https://x.com/karpathy/status/2004607146781278521): agents, hooks,
+MCP, permissions, tools. Everyone's still figuring out how to hold it.
+Plankton is the enforcement dimension of that layer.
+
+Like the organism: tiny, everywhere, filtering everything.
 
 > [!CAUTION]
-> **Plankton is an experimental research project — not production-ready.**
->
-> This software is experimental, unstable, and under active development. APIs will change without notice. Features may be incomplete or broken. Claude Code CLI updates and underlying model changes may break hooks at any time. Hooks spawn subprocesses that consume significantly more tokens than a standard Claude Code session — disable subprocess delegation in `config.json` if needed. There is no support, no documentation guarantees, and no warranty of any kind. Use at your own risk.
+> Research project under active development. APIs change without
+> notice, hooks may break on CLI updates. Use at your own risk.
 
-## Quick Start
+## quick start
 
 1. **Use this template** to create a new repository
 2. **Install dependencies**:
@@ -21,447 +46,124 @@ checks that run in real time during Claude Code sessions.
    uv sync --all-extras
    ```
 
-3. **Install pre-commit hooks**:
+3. **Start a Claude Code session**. Hooks activate automatically.
 
-   ```bash
-   uv run pre-commit install
-   ```
+Only `jaq` and `ruff` are required. Everything else is optional and
+gracefully skipped if not installed. See [docs/SETUP.md](docs/SETUP.md)
+for per-language installation and configuration.
 
-4. **Verify hooks work**:
-
-   ```bash
-   .claude/hooks/test_hook.sh --self-test
-   ```
-
-5. **Start a Claude Code session** - hooks activate automatically
-
-## What's Included
-
-### Hook Scripts (`.claude/hooks/`)
-
-| File | Type | Purpose |
-| ---- | ---- | ------- |
-| `multi_linter.sh` | PostToolUse | Three-phase linting after Edit/Write |
-| `protect_linter_configs.sh` | PreToolUse | Blocks config file modifications |
-| `stop_config_guardian.sh` | Stop | Detects config changes at session end |
-| `approve_configs.sh` | Helper | Creates guard file for stop hook |
-| `test_hook.sh` | Debug | Self-test suite for hook validation |
-| `config.json` | Config | Runtime configuration for all hooks |
-| `REFERENCE.md` | Docs | Detailed hook reference (at `docs/REFERENCE.md`) |
-
-### Linter Configurations
-
-| File | Linter | Language |
-| ---- | ------ | -------- |
-| `.ruff.toml` | Ruff | Python (formatting + linting) |
-| `ty.toml` | ty | Python (type checking) |
-| `.flake8` | flake8 | Python (Pydantic + async rules) |
-| `.yamllint` | yamllint | YAML |
-| `.shellcheckrc` | ShellCheck | Shell scripts |
-| `.hadolint.yaml` | hadolint | Dockerfiles |
-| `.markdownlint.jsonc` | markdownlint | Markdown (rules) |
-| `.markdownlint-cli2.jsonc` | markdownlint-cli2 | Markdown (CLI config) |
-| `.jscpd.json` | jscpd | Duplicate detection |
-| `taplo.toml` | Taplo | TOML |
-
-### Project Files
-
-| File | Purpose |
-| ---- | ------- |
-| `pyproject.toml` | Project metadata and tool configuration |
-| `.pre-commit-config.yaml` | Pre-commit hook configuration |
-| `.claude/settings.json` | Claude Code hook registration |
-| `CLAUDE.md` | Claude Code behavioral instructions |
-| `Dockerfile` | Multi-stage Docker build |
-| `docker-compose.yml` | Docker Compose for development |
-| `.github/workflows/ci.yml` | GitHub Actions CI pipeline |
-| `Makefile` | Common development commands |
-| `vulture_whitelist.py` | Vulture false positive suppression |
-
-## Hook System
-
-The hooks use a three-phase architecture:
-
-### Phase 1: Auto-Format (silent)
-
-Applies automatic formatting fixes without reporting to Claude:
-
-- Python: `ruff format` + `ruff check --fix`
-- Shell: `shfmt` formatting
-- TOML: `taplo fmt`
-- Markdown: `markdownlint-cli2 --fix`
-- JSON: `jaq` pretty-printing
-
-### Phase 2: Collect Violations (JSON)
-
-Runs linters and collects unfixable violations as structured JSON:
-
-- Python: ruff, ty, flake8-pydantic, flake8-async, vulture, bandit
-- Shell: ShellCheck
-- YAML: yamllint
-- JSON: syntax validation
-- TOML: syntax validation
-- Markdown: markdownlint-cli2
-- Dockerfile: hadolint
-
-### Phase 3: Delegate + Verify
-
-Spawns a `claude -p` subprocess to fix collected violations, then
-re-runs Phase 1 + Phase 2 to verify fixes were successful.
-
-Model selection is complexity-based:
-
-| Violation Type | Model | Examples |
-| -------------- | ----- | -------- |
-| Simple fixes | Haiku | F841, SC2034, JSON syntax |
-| Refactoring | Sonnet | C901, PLR*, PYD*, D* |
-| Complex/many | Opus | Type errors, >5 violations |
-
-## Configuration
-
-### Runtime Configuration (`config.json`)
-
-Edit `.claude/hooks/config.json` to customize hook behavior. If the file is
-missing, all features are enabled with sensible defaults.
-
-#### Language Toggles
-
-Enable or disable linting per language:
-
-```json
-{
-  "languages": {
-    "python": true,
-    "shell": true,
-    "yaml": true,
-    "json": true,
-    "toml": true,
-    "dockerfile": true,
-    "markdown": true,
-    "typescript": false
-  }
-}
-```
-
-#### Phase Control
-
-Disable auto-formatting or subprocess delegation:
-
-```json
-{
-  "phases": {
-    "auto_format": true,
-    "subprocess_delegation": true
-  }
-}
-```
-
-#### Protected Files
-
-Configure which linter config files are protected from modification:
-
-```json
-{
-  "protected_files": [
-    ".ruff.toml",
-    "ty.toml",
-    ".flake8"
-  ]
-}
-```
-
-#### Exclusions
-
-Configure paths excluded from security linters (vulture, bandit):
-
-```json
-{
-  "exclusions": [
-    "tests/",
-    "docs/",
-    ".venv/"
-  ]
-}
-```
-
-#### Subprocess Settings
-
-Configure subprocess timeout and model selection:
-
-```json
-{
-  "subprocess": {
-    "timeout": 300,
-    "model_selection": {
-      "sonnet_patterns": "C901|PLR[0-9]+|PYD[0-9]+",
-      "opus_patterns": "unresolved-attribute",
-      "volume_threshold": 5
-    }
-  }
-}
-```
-
-### Configuration Reference
-
-| Key | Type | Default | Purpose |
-| --- | ---- | ------- | ------- |
-| `languages.<type>` | boolean | true | Enable/disable linting per language |
-| `protected_files` | string[] | 10 files | Protected file list |
-| `exclusions` | string[] | tests/,docs/,... | Paths excluded from linters |
-| `phases.auto_format` | boolean | true | Toggle Phase 1 auto-format |
-| `phases.subprocess_delegation` | boolean | true | Toggle subprocess |
-| `subprocess.timeout` | number | 300 | Subprocess timeout in seconds |
-| `subprocess.model_selection.*` | varies | varies | Model selection patterns |
-| `jscpd.*` | varies | varies | Duplicate detection settings |
-
-### Environment Variable Overrides
-
-| Variable | Overrides | Purpose |
-| -------- | --------- | ------- |
-| `HOOK_SUBPROCESS_TIMEOUT` | `subprocess.timeout` | Subprocess timeout |
-| `HOOK_SKIP_SUBPROCESS=1` | `phases.subprocess_delegation` | Skip subprocess |
-| `HOOK_DEBUG_MODEL=1` | N/A | Output model selection |
-
-## Linter Configuration
-
-Each linter has a standalone config file in the project root. Key
-opinionated choices:
-
-### Python (`.ruff.toml`)
-
-- 50+ rule categories enabled (E, F, B, C901, PLR, D, S, UP, RUF, etc.)
-- McCabe complexity limit: 10
-- Google-style docstrings enforced
-- Preview rules enabled for comprehensive coverage
-
-### Python Types (`ty.toml`)
-
-- Target Python 3.11+
-- Tests get relaxed rules (warn instead of error)
-- Division-by-zero and unresolved references are errors
-
-### Shell (`.shellcheckrc`)
-
-- Maximum enforcement: all optional checks enabled
-- Extended dataflow analysis enabled
-- Bash dialect enforced
-
-### YAML (`.yamllint`)
-
-- All 23 rules explicitly configured
-- 120-character line length
-- Maximum strictness with no implicit defaults
-
-### Dockerfile (`.hadolint.yaml`)
-
-- Maximum strictness with failure-threshold at warning
-- Inline ignore pragmas disabled
-- Label schema enforcement (maintainer, version)
-- Only version pinning rules ignored (with documented rationale)
-
-## Pre-Commit Setup
-
-### Installation
+## verify
 
 ```bash
-# Install pre-commit
-uv add --dev pre-commit
-
-# Install hooks
+# Install pre-commit hooks (optional but recommended)
 uv run pre-commit install
+
+# Run the hook self-test suite
+.claude/hooks/test_hook.sh --self-test
 ```
 
-### Running
+## how it works
 
-```bash
-# Run all hooks on all files
-uv run pre-commit run --all-files
+I built Plankton because I was tired of the copy-paste loop. You tell the
+agent your rules, it ignores half of them, you commit, pre-commit hooks catch
+15 violations, you paste them back in, the agent fixes 12, you commit again, 3
+more appear. Round and round. Worse, I noticed agents exhibit rule-gaming
+behavior: instead of fixing code, they quietly modify your `.ruff.toml` or
+`biome.json` to make violations disappear. The rules get weaker and nobody
+notices. I wanted something that enforced quality as a structural constraint,
+not a suggestion.
 
-# Run specific hook
-uv run pre-commit run ruff-check --all-files
+The system runs in three phases. Phase 1 auto-formats silently: ruff, shfmt,
+biome, taplo, markdownlint — fixing formatting issues before anyone sees them.
+Phase 2 collects remaining violations as structured JSON with line numbers,
+column positions, and violation codes from every configured linter. Phase 3
+delegates those violations to a dedicated Claude subprocess that reasons about
+each fix, applies targeted edits, then the hook re-runs Phase 1 and 2 to
+verify the result. If violations remain, they're escalated to the main agent
+with full context.
 
-# Run on staged files only (default on commit)
-uv run pre-commit run
-```
+Config protection is non-negotiable. A PreToolUse hook blocks edits
+to all 14+ linter config files before they happen, and a Stop hook
+uses git diff to catch anything that slipped through at session end.
 
-### Hook Phases
+Model routing picks the right size of intelligence for each problem: haiku for
+simple unused-variable deletions (~5s), sonnet for complexity refactoring and
+docstring rewrites (~15s), opus when there are 5+ violations or architectural
+type errors (~25s). Tokens aren't wasted on easy fixes; hard problems get the
+reasoning they need.
 
-Pre-commit hooks run in order, matching the CC hook phases:
+The Boy Scout Rule ties it together: edit a file, own all its
+violations, pre-existing or not. No exceptions. Like reinforcement learning signals, these
+corrections shape how the agent writes code, actively preventing bad patterns
+rather than cleaning up after the fact.
 
-1. ruff-format (Python formatting)
-2. ruff-check (Python linting)
-3. flake8-async (async pattern detection)
-4. ty-check (Python type checking)
-5. shellcheck (Shell linting)
-6. yamllint (YAML linting)
-7. jaq (JSON syntax)
-8. taplo (TOML linting)
-9. hadolint (Dockerfile linting)
-10. check-jsonschema + actionlint (GitHub Actions)
-11. markdownlint (Markdown, advisory)
-12. jscpd (Duplicate detection, advisory)
+See [docs/REFERENCE.md](docs/REFERENCE.md) for the full architecture, message
+flows, and configuration reference.
 
-## Keeping Hooks and Pre-Commit in Sync
+## what it enforces
 
-The CC hooks (`multi_linter.sh`) and pre-commit (`.pre-commit-config.yaml`)
-enforce the same standards using the same tools. When modifying either
-system, keep them aligned.
+Style enforcement covers formatting, import ordering, naming
+conventions, docstring format, quote style, indentation, trailing
+commas, modern syntax idioms (Python 3.11+ f-strings, modern type
+annotations). Most of this is handled silently by auto-formatting in
+Phase 1. You never see these violations because they're fixed before
+they're reported.
 
-### Adding a New Linter
+Correctness checks catch unused variables, type errors (ty), dead
+code (vulture, Knip), security vulnerabilities (bandit, Semgrep),
+async anti-patterns (flake8-async), Pydantic model validation,
+duplicate code detection (jscpd), ShellCheck semantic analysis with
+all optional checks enabled, Dockerfile best practices (hadolint at
+maximum strictness), YAML strictness with all 23 yamllint rules
+configured. Phase 2 linters catch these; Phase 3 Claude instances
+fix them.
 
-1. **Add the tool** to `pyproject.toml` dev dependencies
-2. **Add to `multi_linter.sh`**: New case in the file type handler
-3. **Add to `.pre-commit-config.yaml`**: New hook entry
-4. **Create config file** in project root
-5. **Add to `config.json`**: Language toggle (if new language)
-6. **Add to protected_files** in `config.json`
+Architectural constraints are emerging: complexity limits (cyclomatic
+complexity, max arguments, max nesting depth, max statements per
+function), package manager compliance (blocks pip/npm/yarn, enforces
+uv/bun), config file protection with tamper-proof defense. These
+shape how code is organized rather than how it looks.
 
-### Removing a Linter
+## configuration
 
-1. Remove from `multi_linter.sh`
-2. Remove from `.pre-commit-config.yaml`
-3. Remove config file
-4. Remove from `config.json` protected_files
-5. Remove from `pyproject.toml` dependencies
+`.claude/hooks/config.json` controls everything: language toggles, phase
+control, model routing patterns, protected files, exclusions, jscpd
+thresholds, package manager enforcement modes. If the file is missing, all
+features are enabled with sensible defaults. Environment variables
+(`HOOK_SKIP_SUBPROCESS=1`, `HOOK_SUBPROCESS_TIMEOUT`) override config values
+for quick session-level tweaks. Every rule is customizable. Configure what
+gets enforced, how strictly, and for which languages. Full configuration
+reference in [docs/REFERENCE.md](docs/REFERENCE.md).
 
-### Changing a Rule
+## faq
 
-1. Edit the linter's config file
-2. Both CC hooks and pre-commit will pick up the change automatically
-3. No need to modify hook scripts
+See [docs/FAQ.md](docs/FAQ.md) for answers to common questions: how this
+differs from pre-commit hooks, whether models will make this unnecessary, why
+agents modify linting rules, and more.
 
-### Verification Checklist
+## todos
 
-After any hook/pre-commit change, verify:
+- should have an install wizard instead of manual setup, a guided script that
+  detects your stack and configures everything
+- one-click install via Claude Code marketplace would be nice
+- a Claude Code skill for configuration and troubleshooting from inside a
+  session
+- Swift and Go are next
+- model routing currently assumes Anthropic models, need to support any model
+  Claude Code supports (Qwen, DeepSeek, Gemini, etc.) with a generic
+  three-tier system users map to their provider
+- per-directory rule overrides, team config profiles
+- extend beyond code to catch AI writing slop in docs and READMEs
+  ([slop-guard](https://github.com/eric-tramel/slop-guard) integration)
+- `multi_linter.sh` is ~1,300 lines and should split into one file per hook type
+- 103-test integration suite exists but needs work; Claude subprocess
+  stochasticity makes deterministic assertions hard
+- need a strategy for surviving Claude Code CLI updates without breaking
+- measuring LLM+Plankton vs LLM-alone would be useful but needs benchmarking
+  expertise, contributions welcome here
 
-- [ ] `uv run pre-commit run --all-files` passes
-- [ ] `.claude/hooks/test_hook.sh --self-test` passes
-- [ ] `config.json` protected_files list matches CLAUDE.md list
-- [ ] `config.json` protected_files matches default arrays in
-      `protect_linter_configs.sh` and `stop_config_guardian.sh`
-- [ ] New config files are added to `.gitignore` exclusions if needed
-- [ ] CI workflow includes any new tools
+Contributions are welcome.
 
-## Settings Override
-
-Create `.claude/settings.local.json` for personal overrides that
-aren't committed to git:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/multi_linter.sh",
-            "timeout": 120
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Add `.claude/settings.local.json` to `.gitignore` if not already excluded.
-
-## Quality Baseline
-
-When starting a new project from this template:
-
-1. **Run initial lint**: `uv run ruff check src tests`
-2. **Fix all violations** before first commit
-3. **Verify pre-commit**: `uv run pre-commit run --all-files`
-4. **Test hooks**: `.claude/hooks/test_hook.sh --self-test`
-
-The template ships with zero violations. Maintaining this baseline is
-easier than remediating accumulated debt.
-
-## Dependencies
-
-### Required
-
-| Tool | Install | Purpose |
-| ---- | ------- | ------- |
-| `jaq` | `brew install jaq` | JSON parsing in hooks |
-| `ruff` | `uv add --dev ruff` | Python linting/formatting |
-| `claude` | [claude.ai/code](https://claude.ai/code) | Subprocess delegation |
-
-### Optional (gracefully skipped)
-
-| Tool | Install (macOS) | Install (Linux) | Purpose |
-| ---- | --------------- | --------------- | ------- |
-| `ty` | `uv add --dev ty` | Same | Python type checking |
-| `shfmt` | `brew install shfmt` | `apt install shfmt` | Shell formatting |
-| `shellcheck` | `brew install shellcheck` | `apt install shellcheck` | Lint |
-| `yamllint` | `uv add --dev yamllint` | Same | YAML linting |
-| `hadolint` | `brew install hadolint` | GitHub releases | Dockerfile linting |
-| `taplo` | `brew install taplo` | Download from GitHub | TOML linting |
-| `markdownlint-cli2` | `npm i -g markdownlint-cli2` | Same | Markdown lint |
-| `actionlint` | `brew install actionlint` | GitHub releases | GitHub Actions |
-| `jscpd` | `npm install` (local) | Same | Duplicate detection |
-| `vulture` | `uv add --dev vulture` | Same | Dead code detection |
-| `bandit` | `uv add --dev bandit` | Same | Security scanning |
-| `timeout` | `brew install coreutils` | Built-in | Subprocess timeout |
-
-## Vulture Whitelist
-
-The `vulture_whitelist.py` file suppresses false positives from vulture's
-dead code detection. Add entries when vulture reports code that is
-actually used dynamically:
-
-```python
-# Example entries:
-my_fixture  # pytest fixture, used by dependency injection
-MySignal    # Django signal, connected via decorator
-```
-
-Vulture verifies that each whitelisted name exists in the codebase.
-
-## Troubleshooting
-
-### Hook not running
-
-- Verify `.claude/settings.json` has correct hook configuration
-- Check file permissions: `ls -la .claude/hooks/*.sh`
-- Run debug mode: `claude --debug "hooks" --verbose`
-
-### Subprocess not fixing violations
-
-- Check `claude` is in PATH: `which claude`
-- Verify no-hooks settings: `cat ~/.claude/no-hooks-settings.json`
-- Test manually: `HOOK_SKIP_SUBPROCESS=1 .claude/hooks/test_hook.sh file.py`
-
-### Pre-commit failing
-
-- Update hooks: `uv run pre-commit autoupdate`
-- Clean cache: `uv run pre-commit clean`
-- Run verbose: `uv run pre-commit run --all-files --verbose`
-
-### Linter config changes blocked
-
-- This is intentional! The PreToolUse hook protects config files.
-- To make legitimate changes, the user must approve the blocked edit.
-- The Stop hook will also check for unapproved changes at session end.
-
-### Missing tools
-
-- Hooks gracefully skip tools that aren't installed
-- Install optional tools as needed (see Dependencies table)
-- Only `jaq` and `ruff` are required; everything else is optional
-
-### Model selection debugging
-
-```bash
-# See which model would be selected
-echo '{"tool_input": {"file_path": "test.py"}}' \
-  | HOOK_SKIP_SUBPROCESS=1 HOOK_DEBUG_MODEL=1 \
-  .claude/hooks/multi_linter.sh
-```
-
-## License
+## license
 
 [Choose your license]

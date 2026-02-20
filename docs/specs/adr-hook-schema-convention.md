@@ -178,7 +178,7 @@ exit 0) for all current and new hooks. Do not adopt the official
    bug to fix.
 
 4. **Migration cost**: Adopting the official schema requires changing all
-   three hooks simultaneously, updating README.md, updating test_hook.sh,
+   three hooks simultaneously, updating docs/REFERENCE.md, updating test_hook.sh,
    and re-validating all behavior. This is a non-trivial migration for
    zero functional gain.
 
@@ -220,7 +220,7 @@ is mechanical:
    `"hookSpecificOutput": {"permissionDecision": "deny"}`
 3. Move `"reason"` content to `"systemMessage"` (already used in Stop hook)
 4. Update test_hook.sh assertions
-5. Update README.md schema reference table
+5. Update docs/REFERENCE.md schema reference table
 
 This migration is straightforward but should be done as a single atomic
 change across all hooks, not piecemeal.
@@ -247,7 +247,7 @@ all hooks to the official schema at that point.
 - All hooks use one convention — easy to understand, copy, and test
 - New hooks (enforce_package_managers.sh) match existing patterns exactly
 - No migration effort required now
-- README.md schema reference table remains simple and accurate
+- docs/REFERENCE.md schema reference table remains simple and accurate
 
 ### Negative
 
@@ -302,7 +302,7 @@ with these parameters") and `systemMessage` for brief user-facing context.
 
 ### Where the Convention Is Documented
 
-- **README.md** line 817: Hook Schema Reference table
+- **docs/REFERENCE.md** line 817: Hook Schema Reference table
 - **protect_linter_configs.sh** lines 8-10: Header comment
 - **stop_config_guardian.sh** lines 13-14: Header comment
 - **This ADR**: Canonical explanation of divergence and rationale
@@ -311,7 +311,7 @@ with these parameters") and `systemMessage` for brief user-facing context.
 
 - [ADR: Package Manager Enforcement](adr-package-manager-enforcement.md) —
   Script Conventions section references this schema convention
-- [README.md Hook Schema Reference](../.claude/hooks/README.md) — Line 817,
+- [docs/REFERENCE.md Hook Schema Reference](../REFERENCE.md) — Line 817,
   documents the convention in table form
 - [Architecture Overview](psf/00-cc-hooks-template-architecture-overview.md) —
   Data Model section documents the JSON schemas

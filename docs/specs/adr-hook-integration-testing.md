@@ -924,18 +924,18 @@ P28 verifies [verify: docs/REFERENCE.md §Hook Invocation Behavior].
 README = `docs/REFERENCE.md`
 
 Required-tool checks (DEP01–DEP04) verify
-[verify: README §Dependencies, README §claude Command Discovery].
+[verify: docs/REFERENCE.md §Dependencies, docs/REFERENCE.md §claude Command Discovery].
 Optional-tool checks (DEP05–DEP13, DEP24) verify
-[verify: README §Dependencies]. DEP09 additionally checks the
-minimum version [verify: README §hadolint Version Check].
+[verify: docs/REFERENCE.md §Dependencies]. DEP09 additionally checks the
+minimum version [verify: docs/REFERENCE.md §hadolint Version Check].
 Advisory-tool checks (DEP23, DEP25–DEP29) always pass; they
 provide informational output about tool availability.
 DEP14 verifies the no-hooks settings file
-[verify: README §Subprocess Hook Prevention]. Settings keys
+[verify: docs/REFERENCE.md §Subprocess Hook Prevention]. Settings keys
 (DEP15–DEP18) verify [verify: .claude/settings.json].
 Config keys (DEP19–DEP21) verify
-[verify: README §Runtime Configuration,
-README §Package Manager Enforcement].
+[verify: docs/REFERENCE.md §Runtime Configuration,
+docs/REFERENCE.md §Package Manager Enforcement].
 
 | ID | Name | Check | Expected |
 | --- | --- | --- | --- |
@@ -1473,7 +1473,7 @@ run, see [RESULTS.md](../../.claude/tests/hooks/results/RESULTS.md).
 
 ## References
 
-- [docs/REFERENCE.md](../README.md) — Hook architecture and
+- [docs/REFERENCE.md](../REFERENCE.md) — Hook architecture and
   testing documentation
 - [.claude/hooks/multi_linter.sh](../../.claude/hooks/multi_linter.sh)
   — PostToolUse hook implementation
