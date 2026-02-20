@@ -1,10 +1,10 @@
-# Plankton - Claude Code Hooks
+# Plankton
 
 ![Plankton mascot](assets/plankton-cover.png)
 
-A ready-to-use template for Claude Code hook-based code quality enforcement.
-Provides automated linting, formatting, and code quality checks that run
-during Claude Code sessions.
+A ready-to-use template for real-time, hook-based code quality enforcement
+in Claude Code. Provides automated linting, formatting, and code quality
+checks that run in real time during Claude Code sessions.
 
 ## Quick Start
 
