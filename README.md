@@ -2,7 +2,7 @@
 
 ![Plankton mascot](assets/plankton-cover.png)
 
-Real-time code quality enforcement for AI coding agents, built on Claude Code hooks.
+Write-time code quality enforcement for AI coding agents, built on Claude Code hooks.
 
 > [!CAUTION]
 > Research project under active development. Hooks are tested against
