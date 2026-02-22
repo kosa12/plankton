@@ -51,9 +51,9 @@ echo 'export DISABLE_AUTOUPDATER=1' >> ~/.zshrc && source ~/.zshrc
 curl -fsSL https://claude.ai/install.sh | bash -s stable
 ```
 
-Only `jaq` and `ruff` are required. Everything else is optional and
-gracefully skipped if not installed. See [docs/SETUP.md](docs/SETUP.md)
-for per-language installation and configuration.
+`jaq`, `ruff`, and `uv` are required for all languages. TypeScript also
+needs `biome`. Everything else is optional and gracefully skipped if not
+installed. See [docs/SETUP.md](docs/SETUP.md) for per-language setup.
 
 ## what is plankton
 
