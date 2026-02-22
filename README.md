@@ -89,42 +89,16 @@ uv run pre-commit install
 
 ## how it works
 
-I built Plankton because I was tired of the copy-paste loop. You tell the
-agent your rules, it ignores half of them, you commit, pre-commit hooks catch
-15 violations, you paste them back in, the agent fixes 12, you commit again, 3
-more appear. Round and round. Worse, I noticed agents exhibit rule-gaming
-behavior: instead of fixing code, they quietly modify your `.ruff.toml` or
-`biome.json` to make violations disappear. The rules get weaker and nobody
-notices. I wanted something that enforced quality as a structural constraint,
-not a suggestion.
-
-The system runs in three phases. Phase 1 auto-formats silently: ruff, shfmt,
-biome, taplo, markdownlint — fixing formatting issues before anyone sees them.
-Phase 2 collects remaining violations as structured JSON with line numbers,
-column positions, and violation codes from every configured linter. Phase 3
-delegates those violations to a dedicated Claude subprocess that reasons about
-each fix, applies targeted edits, then the hook re-runs Phase 1 and 2 to
-verify the result. If violations remain, they're escalated to the main agent
-with full context.
-
-Config protection is non-negotiable. A PreToolUse hook blocks edits
-to all 14+ linter config files before they happen, and a Stop hook
-uses git diff to catch anything that slipped through at session end.
-
-Model routing picks the right size of intelligence for each problem: haiku for
-simple unused-variable deletions (~5s), sonnet for complexity refactoring and
-docstring rewrites (~15s), opus when there are 5+ violations or architectural
-type errors (~25s). Tokens aren't wasted on easy fixes; hard problems get the
-reasoning they need.
-
-The Boy Scout Rule ties it together: edit a file, own all its
-violations, pre-existing or not. No exceptions. Like reinforcement
-learning signals, these
-corrections shape how the agent writes code, actively preventing bad patterns
-rather than cleaning up after the fact.
+Three phases run on every file edit: auto-format first (ruff, shfmt, biome,
+taplo, markdownlint), then collect remaining violations as structured JSON from
+20+ linters, then delegate what's left to dedicated Claude subprocesses that
+reason about each fix. Config files are tamper-proof — a PreToolUse hook blocks
+linter config edits before they happen. Model routing right-sizes intelligence
+to problem complexity so tokens aren't wasted on easy fixes.
 
 See [docs/REFERENCE.md](docs/REFERENCE.md) for the full architecture, message
-flows, and configuration reference.
+flows, and configuration reference. For the motivation and design story, read
+the [original writeup](https://x.com/alxfazio/status/2024931367612743688).
 
 ## what it enforces
 
