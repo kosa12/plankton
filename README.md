@@ -30,6 +30,16 @@ command, no plugin, no config. Clone, cd, claude.
 > *"work on /path/to/my-project"* — it will apply the same quality
 > enforcement to that codebase while the hooks stay active.
 
+> [!NOTE]
+> **Won't flood you with violations on an existing codebase.** Plankton only
+> checks files your agent edits — untouched files are never scanned. When it
+> does check a file, all violations are enforced (pre-existing included).
+> Exclude directories you don't want checked in `.claude/hooks/config.json`:
+>
+> ```json
+> "exclusions": ["tests/", "legacy/", "vendor/", "node_modules/"]
+> ```
+
 **Recommended: disable Claude Code auto-updates.** Plankton depends on
 undocumented CC internals — a silent auto-update can break hooks without
 warning.
