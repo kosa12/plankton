@@ -39,6 +39,9 @@ min_confidence = 80
 paths = ["src"]
 exclude = ["tests", ".venv"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

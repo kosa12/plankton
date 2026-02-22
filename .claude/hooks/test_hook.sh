@@ -111,7 +111,9 @@ run_self_test() {
     for t in jaq grep sed tr head cat touch bash; do
       [[ "${t}" == "${exclude_tool}" ]] && continue
       t_path=$(command -v "${t}" 2>/dev/null || true)
-      [[ -n "${t_path}" ]] && ln -sf "${t_path}" "${mock_dir}/${t}" 2>/dev/null || true
+      if [[ -n "${t_path}" ]]; then
+        ln -sf "${t_path}" "${mock_dir}/${t}" 2>/dev/null || true
+      fi
     done
   }
 

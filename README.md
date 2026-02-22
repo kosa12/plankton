@@ -72,6 +72,14 @@ Like the organism: tiny, everywhere, filtering everything.
    uv sync --all-extras
    ```
 
+3. **Run the Setup Wizard**:
+
+   ```bash
+   uv run --no-project scripts/setup.py
+   ```
+
+   This will auto-detect your project languages, check for installed tools, and generate your configuration.
+
 4. **Start a Claude Code session**. Hooks activate automatically.
 
 Only `jaq` and `ruff` are required. Everything else is optional and
@@ -170,7 +178,7 @@ agents modify linting rules, and more.
 
 ## todos
 
-- should have an install wizard instead of manual setup, a guided script that
+- [x] should have an install wizard instead of manual setup, a guided script that
   detects your stack and configures everything
 - one-click install via Claude Code marketplace would be nice
 - a Claude Code skill for configuration and troubleshooting from inside a
