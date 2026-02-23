@@ -1,5 +1,6 @@
 #!/bin/bash
 # test_hook.sh - Test multi_linter.sh with sample input
+# shellcheck disable=SC2317  # indirect callback functions throughout
 #
 # Usage: ./test_hook.sh <file_path>
 #        ./test_hook.sh --self-test
@@ -111,8 +112,9 @@ run_self_test() {
     for t in jaq grep sed tr head cat touch bash; do
       [[ "${t}" == "${exclude_tool}" ]] && continue
       t_path=$(command -v "${t}" 2>/dev/null || true)
-      # shellcheck disable=SC2015  # intentional: || true is fallback, not else
-      [[ -n "${t_path}" ]] && ln -sf "${t_path}" "${mock_dir}/${t}" 2>/dev/null || true
+      if [[ -n "${t_path}" ]]; then
+        ln -sf "${t_path}" "${mock_dir}/${t}" 2>/dev/null || true
+      fi
     done
   }
 
@@ -1211,7 +1213,7 @@ def foo():
 
   # Unified schema: Python ruff violations must have line/column keys
   # (not raw location.row/location.column from ruff JSON)
-  # shellcheck disable=SC2329,SC2317  # invoked indirectly as callback
+  # shellcheck disable=SC2329  # invoked indirectly as callback
   _check_ruff_unified() {
     local stderr="$1" exit_code="$2"
     [[ "${exit_code}" -ne 2 ]] && return 1

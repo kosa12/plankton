@@ -50,13 +50,15 @@ repos:
         exclude: ^(scripts/|docs/|tests/)
         require_serial: true
 
-      # === PHASE 4: SHELL ===
+  # === PHASE 4: SHELL (pinned binary — consistent across macOS/Linux) ===
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
       - id: shellcheck
-        name: shellcheck
-        entry: shellcheck
-        language: system
         types: [shell]
 
+  - repo: local
+    hooks:
       # === PHASE 5: YAML ===
       - id: yamllint
         name: yamllint
